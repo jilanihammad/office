@@ -287,6 +287,154 @@ app.get('/api/stats', (req, res) => {
   });
 });
 
+// --- Draft Generation ---
+app.post('/api/draft/:conversationId', async (req, res) => {
+  const db = getDb();
+  const { conversationId } = req.params;
+  const { variant = 'concise', instructions } = req.body;
+  
+  // Get thread messages
+  const messages = db.prepare(
+    'SELECT * FROM messages WHERE conversation_id = ? ORDER BY received_at ASC'
+  ).all(conversationId);
+  
+  if (messages.length === 0) {
+    return res.status(404).json({ error: 'No messages found for this thread' });
+  }
+  
+  const thread = db.prepare('SELECT * FROM threads WHERE conversation_id = ?').get(conversationId);
+  const classification = db.prepare('SELECT * FROM classifications WHERE conversation_id = ?').get(conversationId);
+  
+  // Get style examples for tone matching
+  const styleExamples = db.prepare('SELECT your_email FROM style_examples ORDER BY added_at DESC LIMIT 3').all();
+  
+  // Get relationship context
+  const senderEmail = messages[messages.length - 1].sender_email;
+  const relationship = db.prepare('SELECT * FROM relationship_memory WHERE email = ?').get(senderEmail);
+  
+  const threadText = messages.slice(-8).map(m =>
+    `From: ${m.sender_name} <${m.sender_email}> (${m.received_at})\n${m.body_text || m.body_preview}`
+  ).join('\n---\n');
+  
+  const variantGuide = variant === 'concise'
+    ? 'Write a concise reply (2-4 sentences max). Direct, no filler. Get to the point.'
+    : 'Write a complete reply. Professional but human. Cover all points raised.';
+  
+  const styleGuide = styleExamples.length > 0
+    ? `\nMatch this writing style:\n${styleExamples.map(s => s.your_email).join('\n---\n')}`
+    : '';
+  
+  const relationshipContext = relationship
+    ? `\nRelationship context: ${relationship.name} (${relationship.role}). ${relationship.notes || ''}`
+    : '';
+  
+  const customInstructions = instructions
+    ? `\nAdditional instructions: ${instructions}`
+    : '';
+  
+  const systemPrompt = `You are drafting an email reply on behalf of the user.
+Rules:
+- Never make up facts or commitments the user hasn't agreed to
+- If the email asks for a decision, say "I'll get back to you on this" rather than deciding
+- Match the formality level of the incoming email
+- No "Hope this email finds you well" or similar filler
+- Sign off naturally (just first name)${styleGuide}${relationshipContext}`;
+
+  const userPrompt = `Thread (${thread?.subject || 'no subject'}):
+${threadText}
+
+Classification: ${classification?.priority || 'unknown'} — ${classification?.label || ''}
+${classification?.needs_reply ? 'Flagged as needing reply.' : ''}
+
+${variantGuide}${customInstructions}
+
+Write only the reply body. No subject line.`;
+
+  try {
+    const { chat } = await import('./lib/llm.js');
+    const draftText = await chat(systemPrompt, [{ role: 'user', content: userPrompt }], {
+      maxTokens: 1024,
+      temperature: 0.4,
+    });
+    
+    // Save draft
+    const result = db.prepare(`
+      INSERT INTO drafts (conversation_id, variant, body_text, reply_type, status)
+      VALUES (?, ?, ?, 'reply', 'draft')
+    `).run(conversationId, variant, draftText.trim());
+    
+    res.json({
+      ok: true,
+      draft: {
+        id: result.lastInsertRowid,
+        variant,
+        body_text: draftText.trim(),
+        status: 'draft',
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Reclassify ---
+app.post('/api/classify/:conversationId', async (req, res) => {
+  const db = getDb();
+  const { conversationId } = req.params;
+  
+  const messages = db.prepare(
+    'SELECT * FROM messages WHERE conversation_id = ? ORDER BY received_at ASC'
+  ).all(conversationId);
+  
+  if (messages.length === 0) {
+    return res.status(404).json({ error: 'Thread not found' });
+  }
+  
+  const thread = db.prepare('SELECT * FROM threads WHERE conversation_id = ?').get(conversationId);
+  
+  try {
+    const { classifyThread } = await import('./lib/classifier.js');
+    const result = await classifyThread({
+      conversation_id: conversationId,
+      subject: thread?.subject || '',
+      messages,
+    });
+    
+    db.prepare(`
+      INSERT OR REPLACE INTO classifications 
+      (conversation_id, priority, label, rule_signals, llm_rationale, confidence, needs_reply, classified_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(
+      conversationId, result.priority, result.label,
+      result.rule_signals, result.llm_rationale, result.confidence, result.needs_reply
+    );
+    
+    res.json({ ok: true, classification: result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Sender Rules ---
+app.get('/api/sender-rules', (req, res) => {
+  const db = getDb();
+  const rules = db.prepare('SELECT * FROM sender_rules ORDER BY priority_boost DESC').all();
+  res.json({ rules });
+});
+
+app.post('/api/sender-rules', (req, res) => {
+  const db = getDb();
+  const { email_pattern, priority_boost, label } = req.body;
+  
+  if (!email_pattern) return res.status(400).json({ error: 'email_pattern required' });
+  
+  db.prepare(
+    'INSERT OR REPLACE INTO sender_rules (email_pattern, priority_boost, label) VALUES (?, ?, ?)'
+  ).run(email_pattern, priority_boost || 0, label || '');
+  
+  res.json({ ok: true });
+});
+
 // --- Startup ---
 async function start() {
   // Init DB

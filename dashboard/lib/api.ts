@@ -140,4 +140,14 @@ export const api = {
   sync: () => post<{ ok: boolean; results: unknown }>('/sync'),
   override: (conversationId: string, priority: string) =>
     post<{ ok: boolean }>(`/override/${encodeURIComponent(conversationId)}`, { priority }),
+  draft: (conversationId: string, variant: string, instructions?: string) =>
+    post<{ ok: boolean; draft: { id: number; variant: string; body_text: string; status: string } }>(
+      `/draft/${encodeURIComponent(conversationId)}`,
+      { variant, instructions }
+    ),
+  classify: (conversationId: string) =>
+    post<{ ok: boolean; classification: unknown }>(`/classify/${encodeURIComponent(conversationId)}`),
+  senderRules: () => get<{ rules: { email_pattern: string; priority_boost: number; label: string }[] }>('/sender-rules'),
+  addSenderRule: (rule: { email_pattern: string; priority_boost: number; label: string }) =>
+    post<{ ok: boolean }>('/sender-rules', rule),
 };

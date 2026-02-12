@@ -5,6 +5,59 @@ import { api, type ThreadDetail } from '@/lib/api';
 import { timeAgo, formatDate, priorityBg } from '@/lib/utils';
 import Link from 'next/link';
 
+function DraftActions({ conversationId, onDraft }: { conversationId: string; onDraft: () => void }) {
+  const [generating, setGenerating] = useState(false);
+  const [instructions, setInstructions] = useState('');
+  const [showInstructions, setShowInstructions] = useState(false);
+
+  const generate = async (variant: 'concise' | 'full') => {
+    setGenerating(true);
+    try {
+      await api.draft(conversationId, variant, instructions || undefined);
+      onDraft();
+      setInstructions('');
+      setShowInstructions(false);
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : 'Draft failed');
+    }
+    setGenerating(false);
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      {showInstructions && (
+        <input
+          type="text"
+          value={instructions}
+          onChange={e => setInstructions(e.target.value)}
+          placeholder="e.g. decline politely, ask for more time..."
+          className="px-2 py-1 text-xs rounded border border-[var(--border)] bg-[var(--bg)] text-[var(--text)] w-64"
+        />
+      )}
+      <button
+        onClick={() => setShowInstructions(!showInstructions)}
+        className="px-2 py-1 text-xs rounded border border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]"
+      >
+        {showInstructions ? 'Hide' : 'Instructions'}
+      </button>
+      <button
+        onClick={() => generate('concise')}
+        disabled={generating}
+        className="px-2.5 py-1 text-xs rounded bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-50"
+      >
+        {generating ? 'Drafting...' : 'Quick Reply'}
+      </button>
+      <button
+        onClick={() => generate('full')}
+        disabled={generating}
+        className="px-2.5 py-1 text-xs rounded border border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent)]/10 disabled:opacity-50"
+      >
+        Full Reply
+      </button>
+    </div>
+  );
+}
+
 export default function ThreadPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [data, setData] = useState<ThreadDetail | null>(null);
@@ -140,25 +193,38 @@ export default function ThreadPage({ params }: { params: Promise<{ id: string }>
         ))}
       </div>
 
-      {/* Drafts */}
-      {drafts.length > 0 && (
-        <div className="mt-8">
-          <h3 className="text-sm font-medium mb-3">Draft Replies</h3>
-          <div className="space-y-3">
-            {drafts.map(d => (
-              <div key={d.id} className="p-4 rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
-                <div className="flex items-baseline justify-between mb-2">
-                  <span className="text-xs font-medium uppercase text-[var(--text-muted)]">
-                    {d.variant} · {d.status}
-                  </span>
-                  <span className="text-xs text-[var(--text-muted)]">{timeAgo(d.created_at)}</span>
-                </div>
-                <div className="text-sm whitespace-pre-wrap">{d.body_text}</div>
-              </div>
-            ))}
-          </div>
+      {/* Draft Generation */}
+      <div className="mt-8">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-medium">Reply Drafts</h3>
+          <DraftActions conversationId={decodeURIComponent(id)} onDraft={async () => {
+            const updated = await api.thread(decodeURIComponent(id));
+            setData(updated);
+          }} />
         </div>
-      )}
+        <div className="space-y-3">
+          {drafts.map(d => (
+            <div key={d.id} className="p-4 rounded-lg border border-[var(--border)] bg-[var(--bg-card)]">
+              <div className="flex items-baseline justify-between mb-2">
+                <span className="text-xs font-medium uppercase text-[var(--text-muted)]">
+                  {d.variant} · {d.status}
+                </span>
+                <span className="text-xs text-[var(--text-muted)]">{timeAgo(d.created_at)}</span>
+              </div>
+              <div className="text-sm whitespace-pre-wrap">{d.body_text}</div>
+              <button
+                onClick={() => navigator.clipboard.writeText(d.body_text)}
+                className="mt-2 text-xs text-[var(--accent)] hover:underline"
+              >
+                Copy to clipboard
+              </button>
+            </div>
+          ))}
+          {drafts.length === 0 && (
+            <p className="text-xs text-[var(--text-muted)]">No drafts yet. Generate one above.</p>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
