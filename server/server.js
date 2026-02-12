@@ -20,6 +20,7 @@ import cron from 'node-cron';
 import { getDb } from './lib/db.js';
 import { fullSync } from './lib/sync.js';
 import { authenticate } from './lib/graph.js';
+import { verifyWebhook, handleEmailWebhook, handleCalendarWebhook, handleBulkImport } from './lib/webhook.js';
 
 const app = express();
 app.use(cors());
@@ -435,51 +436,69 @@ app.post('/api/sender-rules', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Webhooks (Power Automate) ---
+app.post('/api/webhook/email', verifyWebhook, handleEmailWebhook);
+app.post('/api/webhook/calendar', verifyWebhook, handleCalendarWebhook);
+app.post('/api/webhook/bulk', verifyWebhook, handleBulkImport);
+
 // --- Startup ---
 async function start() {
   // Init DB
   getDb();
   console.log('[db] SQLite initialized');
   
-  // Try Graph authentication
-  try {
-    await authenticate();
-    console.log('[graph] Authenticated with Microsoft Graph');
-    
-    // Initial sync
-    console.log('[sync] Running initial sync...');
-    const results = await fullSync();
-    console.log('[sync] Initial sync complete:', results);
-  } catch (err) {
-    console.warn('[graph] Authentication skipped:', err.message);
-    console.warn('[graph] Set AZURE_CLIENT_ID and AZURE_TENANT_ID in .env to enable Graph sync');
-  }
+  // Determine sync mode
+  const hasGraphConfig = process.env.AZURE_CLIENT_ID && process.env.AZURE_TENANT_ID;
+  const hasWebhookSecret = !!process.env.WEBHOOK_SECRET;
   
-  // Schedule sync
-  const interval = parseInt(process.env.SYNC_INTERVAL_MINUTES || '15');
-  cron.schedule(`*/${interval} * * * *`, async () => {
-    console.log(`[cron] Running sync (every ${interval} min)...`);
+  if (hasGraphConfig) {
+    // Graph API mode — direct sync
     try {
-      await fullSync();
+      await authenticate();
+      console.log('[graph] Authenticated with Microsoft Graph');
+      
+      console.log('[sync] Running initial sync...');
+      const results = await fullSync();
+      console.log('[sync] Initial sync complete:', results);
+      
+      const interval = parseInt(process.env.SYNC_INTERVAL_MINUTES || '15');
+      cron.schedule(`*/${interval} * * * *`, async () => {
+        console.log(`[cron] Running sync (every ${interval} min)...`);
+        try { await fullSync(); }
+        catch (err) { console.error('[cron] Sync failed:', err.message); }
+      });
+      console.log(`[cron] Sync scheduled every ${interval} minutes`);
     } catch (err) {
-      console.error('[cron] Sync failed:', err.message);
+      console.warn('[graph] Authentication failed:', err.message);
+      console.warn('[graph] Falling back to webhook-only mode');
     }
-  });
-  console.log(`[cron] Sync scheduled every ${interval} minutes`);
+  } else {
+    console.log('[mode] Webhook-only mode (no Graph API credentials)');
+    console.log('[mode] Power Automate will push data to POST /api/webhook/email and /api/webhook/calendar');
+    if (hasWebhookSecret) {
+      console.log('[mode] Webhook secret configured — requests must include X-Webhook-Secret header');
+    } else {
+      console.warn('[mode] WARNING: No WEBHOOK_SECRET set — webhook endpoints are unprotected');
+    }
+  }
   
   // Start server
   app.listen(PORT, () => {
-    console.log(`\n[server] Email Wiz running at http://localhost:${PORT}`);
+    console.log(`\n[server] Office running at http://localhost:${PORT}`);
     console.log(`[server] Endpoints:`);
-    console.log(`  GET  /api/health       — Status + sync state`);
-    console.log(`  GET  /api/brief        — Daily command brief`);
-    console.log(`  GET  /api/threads      — Prioritized inbox`);
-    console.log(`  GET  /api/thread/:id   — Thread detail`);
-    console.log(`  GET  /api/events       — Calendar events`);
-    console.log(`  GET  /api/commitments  — Commitment tracker`);
-    console.log(`  GET  /api/stats        — Dashboard stats`);
-    console.log(`  POST /api/sync         — Manual sync trigger`);
-    console.log(`  POST /api/override/:id — Override priority\n`);
+    console.log(`  GET  /api/health            — Status + sync state`);
+    console.log(`  GET  /api/brief             — Daily command brief`);
+    console.log(`  GET  /api/threads           — Prioritized inbox`);
+    console.log(`  GET  /api/thread/:id        — Thread detail`);
+    console.log(`  GET  /api/events            — Calendar events`);
+    console.log(`  GET  /api/commitments       — Commitment tracker`);
+    console.log(`  GET  /api/stats             — Dashboard stats`);
+    console.log(`  POST /api/sync              — Manual sync (Graph mode)`);
+    console.log(`  POST /api/draft/:id         — Generate reply draft`);
+    console.log(`  POST /api/override/:id      — Override priority`);
+    console.log(`  POST /api/webhook/email     — Power Automate email webhook`);
+    console.log(`  POST /api/webhook/calendar  — Power Automate calendar webhook`);
+    console.log(`  POST /api/webhook/bulk      — Bulk import\n`);
   });
 }
 
