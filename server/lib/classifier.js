@@ -54,13 +54,25 @@ function ruleClassify(thread) {
   
   // --- Sender rules from DB ---
   const db = getDb();
-  const senderRule = db.prepare(
-    'SELECT * FROM sender_rules WHERE ? LIKE email_pattern'
-  ).get(latestMsg.sender_email);
+  // Check exact match first, then pattern match (% wildcards)
+  const senderRules = db.prepare(
+    'SELECT * FROM sender_rules ORDER BY priority_boost DESC'
+  ).all();
   
-  if (senderRule) {
-    score += senderRule.priority_boost * 10;
-    signals.push(`sender:${senderRule.label}`);
+  const senderEmail = latestMsg.sender_email.toLowerCase();
+  const matchedRule = senderRules.find(rule => {
+    const pattern = rule.email_pattern.toLowerCase();
+    if (pattern.includes('%')) {
+      // SQL LIKE pattern: convert to regex
+      const regex = new RegExp('^' + pattern.replace(/%/g, '.*').replace(/\./g, '\\.') + '$');
+      return regex.test(senderEmail);
+    }
+    return pattern === senderEmail;
+  });
+  
+  if (matchedRule) {
+    score += matchedRule.priority_boost * 10;
+    signals.push(`sender:${matchedRule.label || matchedRule.email_pattern}`);
   }
   
   // --- Recipient signals ---

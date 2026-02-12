@@ -60,6 +60,9 @@ export default function Dashboard() {
           <Link href="/commitments" className="px-3 py-1.5 text-sm rounded-md bg-[var(--bg-card)] border border-[var(--border)] hover:bg-[var(--bg-hover)] transition-colors">
             Commitments
           </Link>
+          <Link href="/settings" className="px-3 py-1.5 text-sm rounded-md bg-[var(--bg-card)] border border-[var(--border)] hover:bg-[var(--bg-hover)] transition-colors">
+            Settings
+          </Link>
           <button
             onClick={handleSync}
             disabled={syncing}
