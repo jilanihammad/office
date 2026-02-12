@@ -1,6 +1,7 @@
 node_modules/
-.env
+.next/
 package-lock.json
-data/*.db
-data/*.db-wal
-data/*.db-shm
+server/package-lock.json
+dashboard/package-lock.json
+*.db
+.env
