@@ -764,13 +764,125 @@ Style examples:
 
 ---
 
+## Runtime Constraints
+
+- **100% local execution** — no cloud hosting, no EC2, no external servers. Everything runs on your local machine (Mac Mini or laptop).
+- **Cron-based automation** — polling jobs (email sync, calendar sync, commitment checks) run every 15-30 minutes via cron or `node-cron`.
+- **Only external API: Amazon Bedrock** — Claude Opus 4.6 via Bedrock is the sole external service. All email data sent to Bedrock is covered by Amazon's enterprise data handling policies.
+- **Dashboard access: localhost only** — `http://localhost:3000` (dashboard) and `http://localhost:3456` (API). No public endpoints.
+- **Why:** User works at Amazon. Privacy and security are non-negotiable. No corporate email data touches third-party cloud infrastructure.
+
+## Memory System
+
+Three tiers of memory, each serving a different purpose:
+
+### Tier 1: Working Memory (ephemeral, resets daily)
+**What:** Current session state — today's triage decisions, drafts in progress, meetings prepped.
+
+```json
+{
+  "date": "2026-02-12",
+  "triaged": ["conv_123", "conv_456"],
+  "drafts_approved": 3,
+  "drafts_pending": 2,
+  "meetings_prepped": ["event_789"],
+  "focus_blocks_held": ["9:00-10:30"],
+  "nudges_sent": ["commitment_42"]
+}
+```
+
+- Stored in SQLite `working_memory` table, partitioned by date
+- Prevents re-processing: "I already classified this thread today"
+- Feeds the Daily Brief: "You've handled 12 of 18 items so far"
+- Cleared/archived after 7 days
+
+### Tier 2: Relationship Memory (persistent, grows over time)
+**What:** Context about people you interact with — communication patterns, reliability, preferences, reporting structure.
+
+```json
+{
+  "email": "sarah.chen@company.com",
+  "name": "Sarah Chen",
+  "role": "VP Finance",
+  "relationship": "skip-level stakeholder",
+  "patterns": {
+    "communication_style": "direct, data-driven, prefers tables over prose",
+    "response_time": "usually replies within 2 hours",
+    "reliability": "high — delivers on commitments",
+    "pet_peeves": "hates vague timelines, wants specific dates",
+    "meeting_behavior": "always starts on time, ends early if agenda is done"
+  },
+  "notes": [
+    "Pushed back hard on headcount in Q1 planning (Feb 2026)",
+    "Prefers 1-pagers over slide decks",
+    "Ally on the data platform investment — reference her support"
+  ],
+  "last_interaction": "2026-02-12T14:00:00",
+  "interaction_frequency": "2-3 times/week",
+  "open_loops": ["Awaiting Q1 budget final sign-off"]
+}
+```
+
+- Stored in SQLite `relationship_memory` table
+- Updated automatically: response times, interaction frequency, commitment delivery rate
+- Updated manually: notes, preferences, relationship context (you tell the system or it infers from patterns)
+- Feeds: meeting prep briefs, draft tone adjustment, delegation suggestions
+- **Example use:** Before your 1:1 with Sarah, the prep brief says: "Sarah prefers specific dates — have exact timelines ready. She's an ally on data platform — reference if relevant."
+
+### Tier 3: Institutional Memory (persistent, queryable archive)
+**What:** Decisions made, commitments history, project milestones, organizational context.
+
+```json
+{
+  "type": "decision",
+  "date": "2026-02-12",
+  "summary": "Q1 budget approved at $1.8M with phased hiring",
+  "participants": ["Sarah Chen", "Mike Torres", "You"],
+  "source": "VP Review meeting + email thread",
+  "source_ids": ["event_789", "conv_456"],
+  "project": "Q1 Planning",
+  "implications": ["2 hires deferred to Q2", "Contractor budget excluded"],
+  "follow_ups": ["Share updated project timeline by Feb 14"]
+}
+```
+
+- Stored in SQLite `institutional_memory` table
+- Types: decisions, milestones, commitments (completed), escalations, project context
+- Queryable by: date range, project, person, type
+- Feeds: meeting prep (recent decisions), weekly digest (wins/risks), commitment tracking (historical patterns)
+- **Example use:** Before QBR, system pulls: "Here are all decisions made this quarter, organized by project. 3 are at risk of reversal based on recent email sentiment."
+
+### Memory Integration with LLM
+
+When building context for any LLM call (classification, drafting, meeting prep), the memory system injects relevant context:
+
+```
+# Memory Context (auto-injected)
+
+## Relevant Relationship Context
+- Sarah Chen: VP Finance, direct/data-driven, hates vague timelines
+- Mike Torres: PM Lead, reliable, usually over-communicates (good)
+
+## Recent Decisions (last 14 days)
+- Q1 budget: $1.8M approved, phased hiring
+- API v2: spec delivered, implementation starting next sprint
+
+## Open Commitments Involving Thread Participants
+- [YOU → Sarah] Share revised project timeline (due Feb 14)
+- [Mike → YOU] Updated sprint plan (due Feb 13)
+```
+
+This gives the LLM the same context a human executive assistant would have after working with you for months.
+
 ## Security Considerations
 
+- **All data stays local** — SQLite database on local disk, no cloud sync
 - OAuth tokens stored in macOS Keychain, never in plaintext
-- SQLite database is local-only; add SQLCipher encryption if needed
-- Email bodies stored locally — never sent to third parties (LLM calls go through Bedrock with enterprise data handling)
-- No telemetry, no analytics, no data leaves the machine except LLM API calls
+- Email bodies stored locally — never sent to third parties
+- LLM calls go through Amazon Bedrock only (enterprise data handling, compliant with internal policy)
+- No telemetry, no analytics, no external data transmission except Bedrock API
 - Session tokens auto-refresh; revocable from Azure AD portal
+- Optional: SQLCipher encryption at rest for the SQLite database
 
 ---
 
