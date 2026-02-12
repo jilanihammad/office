@@ -21,6 +21,7 @@ import { getDb } from './lib/db.js';
 import { fullSync } from './lib/sync.js';
 import { authenticate } from './lib/graph.js';
 import { verifyWebhook, handleEmailWebhook, handleCalendarWebhook, handleBulkImport } from './lib/webhook.js';
+import { startWatcher } from './lib/filewatcher.js';
 
 const app = express();
 app.use(cors());
@@ -473,13 +474,16 @@ async function start() {
       console.warn('[graph] Falling back to webhook-only mode');
     }
   } else {
-    console.log('[mode] Webhook-only mode (no Graph API credentials)');
-    console.log('[mode] Power Automate will push data to POST /api/webhook/email and /api/webhook/calendar');
-    if (hasWebhookSecret) {
-      console.log('[mode] Webhook secret configured — requests must include X-Webhook-Secret header');
-    } else {
-      console.warn('[mode] WARNING: No WEBHOOK_SECRET set — webhook endpoints are unprotected');
-    }
+    console.log('[mode] No Graph API credentials — using local sync modes');
+  }
+  
+  // Start file watcher (OneDrive drop folder)
+  const dropFolder = process.env.DROP_FOLDER;
+  if (dropFolder) {
+    startWatcher(dropFolder);
+  } else {
+    console.log('[watcher] No DROP_FOLDER configured — set it in .env to enable OneDrive sync');
+    console.log('[watcher] Example: DROP_FOLDER=~/Library/CloudStorage/OneDrive-YourCompany/Office-Drop');
   }
   
   // Start server

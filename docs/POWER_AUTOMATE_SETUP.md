@@ -1,56 +1,72 @@
-# Power Automate Setup Guide
+# Power Automate + OneDrive Setup Guide
 
-This guide sets up Power Automate cloud flows to push your Outlook email and calendar data to the Office server — no Azure AD app registration needed.
+100% local. Nothing exposed to the internet.
+
+**How it works:**
+1. Power Automate flow triggers on new email/calendar event
+2. Flow writes a JSON file to your OneDrive folder
+3. OneDrive desktop app syncs that folder to your Mac
+4. Server watches the local folder, ingests the JSON, classifies, done
 
 ## Prerequisites
 
-- Microsoft 365 account with Power Automate access (most corporate accounts have this)
-- Office server running locally (`npm run dev` in the office directory)
-- A tunnel to expose localhost (see Step 1)
+- Microsoft 365 account with Power Automate access
+- **OneDrive for Mac** installed and syncing ([download](https://www.microsoft.com/en-us/microsoft-365/onedrive/download))
+- Office server running locally (`npm run dev`)
 
-## Step 1: Set Up a Tunnel
+## Step 1: Install OneDrive for Mac
 
-The server runs on localhost:3456. Power Automate needs a public URL to reach it.
+If you don't already have it:
+1. Download from https://www.microsoft.com/en-us/microsoft-365/onedrive/download
+2. Sign in with your corporate account
+3. Let it finish the initial sync
+4. Note your OneDrive local path — usually `~/Library/CloudStorage/OneDrive-YourCompany/`
 
-**Option A: Cloudflare Tunnel (recommended, free)**
-```bash
-brew install cloudflared
-cloudflared tunnel --url http://localhost:3456
+## Step 2: Create the Drop Folder
+
+In your OneDrive, create a folder called `Office-Drop` with two subfolders:
+
 ```
-This gives you a URL like `https://random-words.trycloudflare.com`
-
-**Option B: ngrok**
-```bash
-brew install ngrok
-ngrok http 3456
+OneDrive-YourCompany/
+  Office-Drop/
+    inbox/        ← Power Automate writes email JSON here
+    calendar/     ← Power Automate writes calendar JSON here
 ```
-This gives you a URL like `https://abc123.ngrok-free.app`
 
-Copy your tunnel URL — you'll need it for the flows.
+You can create these in Finder or via terminal:
+```bash
+mkdir -p ~/Library/CloudStorage/OneDrive-YourCompany/Office-Drop/inbox
+mkdir -p ~/Library/CloudStorage/OneDrive-YourCompany/Office-Drop/calendar
+```
 
-## Step 2: Create the Email Flow
+## Step 3: Configure the Server
+
+Edit `server/.env`:
+```
+DROP_FOLDER=~/Library/CloudStorage/OneDrive-YourCompany/Office-Drop
+DROP_POLL_SECONDS=10
+```
+
+Replace `YourCompany` with whatever your OneDrive folder is actually named.
+
+## Step 4: Create the Email Flow
 
 1. Go to https://make.powerautomate.com
-2. Click **+ Create** → **Automated cloud flow**
-3. Name it: `Office — Email Sync`
-4. Trigger: search for **"When a new email arrives (V3)"** (Office 365 Outlook)
-5. Click **Create**
+2. **+ Create** → **Automated cloud flow**
+3. Name: `Office — Email to OneDrive`
+4. Trigger: **"When a new email arrives (V3)"** (Office 365 Outlook)
 
-### Configure the Trigger
-- Folder: `Inbox` (or leave default for all folders)
-- Include Attachments: `No` (we don't need them yet)
-- Only with Attachments: `No`
+### Configure Trigger
+- Folder: `Inbox`
+- Include Attachments: `No`
 
-### Add HTTP Action
-6. Click **+ New step** → search **HTTP**
-7. Configure:
-   - **Method**: `POST`
-   - **URI**: `https://<your-tunnel-url>/api/webhook/email`
-   - **Headers**:
-     - `Content-Type`: `application/json`
-     - `X-Webhook-Secret`: `e3aa40eaa6bf29a1f2023560bb46b43c29edfc2d5e3730cf`
-   - **Body** (switch to raw JSON input):
-```json
+### Add "Create file" Action
+5. **+ New step** → search **"Create file"** → select **OneDrive for Business**
+6. Configure:
+   - **Folder Path**: `/Office-Drop/inbox`
+   - **File Name**: `@{triggerOutputs()?['body/id']}.json`
+   - **File Content**:
+```
 {
   "id": "@{triggerOutputs()?['body/id']}",
   "conversationId": "@{triggerOutputs()?['body/conversationId']}",
@@ -68,24 +84,20 @@ Copy your tunnel URL — you'll need it for the flows.
 }
 ```
 
-8. Click **Save**
+7. **Save**
 
-### Test It
-9. Send yourself a test email
-10. Check the flow run history — it should show a successful HTTP 200
-11. Check `http://localhost:3000` — the email should appear in the inbox
-
-## Step 3: Create the Calendar Flow
+## Step 5: Create the Calendar Flow
 
 1. **+ Create** → **Automated cloud flow**
-2. Name: `Office — Calendar Sync`
+2. Name: `Office — Calendar to OneDrive`
 3. Trigger: **"When an event is created (V3)"** or **"When an event is added, updated or deleted (V3)"**
-4. Add HTTP action:
-   - **Method**: `POST`
-   - **URI**: `https://<your-tunnel-url>/api/webhook/calendar`
-   - **Headers**: same as email flow
-   - **Body**:
-```json
+
+### Add "Create file" Action
+4. Configure:
+   - **Folder Path**: `/Office-Drop/calendar`
+   - **File Name**: `@{triggerOutputs()?['body/id']}.json`
+   - **File Content**:
+```
 {
   "id": "@{triggerOutputs()?['body/id']}",
   "subject": "@{triggerOutputs()?['body/subject']}",
@@ -103,55 +115,69 @@ Copy your tunnel URL — you'll need it for the flows.
 
 5. **Save**
 
-## Step 4: Backfill Existing Emails (Optional)
+## Step 6: Backfill Recent Emails
 
-To import your recent emails (not just new ones going forward):
+To import your existing inbox (not just new emails):
 
-1. Create a new flow: **Instant cloud flow** (manual trigger)
+1. **+ Create** → **Instant cloud flow** (manual trigger)
 2. Add: **"Get emails (V3)"** action
    - Folder: `Inbox`
-   - Top: `100` (or however many you want)
+   - Top: `200`
    - Fetch Only Unread: `No`
-3. Add: **Apply to each** on the email results
-4. Inside the loop, add HTTP POST to `/api/webhook/email` with the same body template
-5. Run it once manually
+3. Add: **Apply to each** on the output
+4. Inside the loop: **Create file** (OneDrive for Business)
+   - Folder: `/Office-Drop/inbox`
+   - File Name: `@{items('Apply_to_each')?['id']}.json`
+   - File Content: same JSON template as Step 4
+5. **Run once** manually
 
-Or use the bulk endpoint — create a script that exports emails to JSON and POST to `/api/webhook/bulk`.
+## Step 7: Verify
 
-## Step 5: Verify
-
+Start the server:
 ```bash
-# Check health — should show message/thread/event counts
+cd /Users/jilani/clawd/office
+npm run dev
+```
+
+You should see:
+```
+[watcher] Watching /Users/.../OneDrive-.../Office-Drop
+[watcher] Poll interval: 10s
+```
+
+Send yourself a test email. Within ~30 seconds:
+1. Power Automate creates a JSON file in OneDrive
+2. OneDrive syncs it to your Mac
+3. Server picks it up, classifies it
+4. It appears in the dashboard at http://localhost:3000
+
+Check health:
+```bash
 curl http://localhost:3456/api/health
-
-# Check the brief
-curl http://localhost:3456/api/brief
 ```
 
-Open `http://localhost:3000` to see the dashboard.
+## How the Sync Chain Works
 
-## Keeping the Tunnel Running
-
-The tunnel needs to stay active for Power Automate to reach your server.
-
-**For development**: just run it when you're working.
-
-**For always-on**: 
-```bash
-# Cloudflare named tunnel (persists across restarts)
-cloudflared tunnel create office
-cloudflared tunnel route dns office office.yourdomain.com
-cloudflared tunnel run office
+```
+Outlook inbox
+  → Power Automate trigger (instant)
+    → OneDrive "Create file" (cloud, ~1s)
+      → OneDrive desktop sync (local, ~5-30s)
+        → Server file watcher (polls every 10s)
+          → SQLite + classify
+            → Dashboard
 ```
 
-Or add it to your startup items.
+Total latency: ~15-45 seconds from email received to dashboard display.
 
 ## Troubleshooting
 
-**Flow fails with 401**: Check that `X-Webhook-Secret` header matches `WEBHOOK_SECRET` in `.env`
+**Files not appearing locally**: Check OneDrive is running (menu bar icon). Click it and verify sync status. Make sure the `Office-Drop` folder shows the cloud/sync icon.
 
-**Flow fails with connection error**: Tunnel isn't running or URL changed. Cloudflare quick tunnels change URL on restart — use a named tunnel for stability.
+**Server not picking up files**: Check `DROP_FOLDER` in `.env` matches the actual local path. Run `ls ~/Library/CloudStorage/` to see exact OneDrive folder name.
 
-**Emails not appearing**: Check flow run history in Power Automate. Look for the HTTP action result — it should show `{"ok":true,"processed":1}`.
+**Classification always P2**: Make sure AWS credentials are set in `.env` for Bedrock LLM. Without them, only rule-based classification runs (still useful, but less nuanced).
 
-**Classification not working**: Make sure `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set in `.env` for Bedrock LLM calls. Rule-based classification works without LLM; only borderline cases need it.
+**Duplicate processing**: Files are moved to `processed/` after ingestion. If you see duplicates, check that the server has write permissions to the drop folder.
+
+**OneDrive not syncing a folder**: Right-click the folder in Finder → "Always Keep on This Device" to force local sync.
