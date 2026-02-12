@@ -23,23 +23,30 @@ office/
 └── data/            SQLite database
 ```
 
-## Quick Start
+## Quick Start (WSL on Windows)
 
 ```bash
-# 1. Configure
-cp server/.env.example server/.env
-# Edit: AZURE_CLIENT_ID, AZURE_TENANT_ID, AWS credentials, USER_EMAIL
+# 1. Clone
+cd ~ && git clone https://github.com/jilanihammad/office.git && cd office
 
 # 2. Install
 npm install
 cd server && npm install && cd ..
 cd dashboard && npm install && cd ..
 
-# 3. Run
+# 3. Configure
+cp server/.env.example server/.env
+# Edit: DROP_FOLDER (your OneDrive path), AWS credentials, USER_EMAIL
+
+# 4. Run
 npm run dev
 # → API:       http://localhost:3456
-# → Dashboard: http://localhost:3000
+# → Dashboard: http://localhost:3000 (accessible from Windows browser)
 ```
+
+Data flows in via Power Automate → OneDrive → local file watcher. See `docs/POWER_AUTOMATE_SETUP.md` for full setup.
+
+Nothing exposed to the internet. All local.
 
 ## Features
 
