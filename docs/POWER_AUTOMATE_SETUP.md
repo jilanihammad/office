@@ -47,9 +47,15 @@ Common paths:
 ```bash
 # Replace with your actual OneDrive path
 ONEDRIVE="/mnt/c/Users/<your-windows-user>/OneDrive - Amazon"
-mkdir -p "$ONEDRIVE/Office-Drop/inbox"
-mkdir -p "$ONEDRIVE/Office-Drop/calendar"
+mkdir -p "$ONEDRIVE/Office-Drop/"{inbox,calendar,outbox,sent-mail,processed}
 ```
+
+Folder purposes:
+- `inbox/` — Power Automate writes incoming emails here
+- `calendar/` — Power Automate writes calendar events here
+- `outbox/` — Server writes send requests → PA picks up and sends via Outlook
+- `sent-mail/` — Power Automate writes your sent emails (style learning)
+- `processed/` — Server archives ingested files here
 
 Verify the folders appear in OneDrive (check Windows File Explorer or https://onedrive.com).
 
@@ -191,6 +197,62 @@ Quick health check:
 ```bash
 curl http://localhost:3456/api/health
 ```
+
+## Step 9: Send Flow (outbox → Outlook)
+
+This closes the loop — draft a reply in the dashboard, click Send, it goes out via Outlook.
+
+1. **+ Create** → **Automated cloud flow**
+2. Name: `Office — Send from Outbox`
+3. Trigger: **"When a file is created"** (OneDrive for Business)
+   - Folder: `/Office-Drop/outbox`
+4. Add: **"Get file content"** → select the trigger file
+5. Add: **"Parse JSON"** on the file content with this schema:
+```json
+{
+  "type": "object",
+  "properties": {
+    "to": {"type": "string"},
+    "cc": {"type": "string"},
+    "subject": {"type": "string"},
+    "body": {"type": "string"},
+    "internetMessageId": {"type": "string"}
+  }
+}
+```
+6. Add: **"Send an email (V2)"** (Office 365 Outlook)
+   - To: `@{body('Parse_JSON')?['to']}`
+   - CC: `@{body('Parse_JSON')?['cc']}`
+   - Subject: `@{body('Parse_JSON')?['subject']}`
+   - Body: `@{body('Parse_JSON')?['body']}`
+7. Add: **"Move file"** — move the JSON from `/Office-Drop/outbox/` to `/Office-Drop/sent/`
+8. **Save**
+
+Now when you click "Send Reply" in the dashboard, it writes a JSON to the outbox, and this flow picks it up and sends via Outlook.
+
+## Step 10: Sent Mail Flow (learn your style)
+
+This teaches the system how you write, so drafts match your tone.
+
+1. **+ Create** → **Automated cloud flow**
+2. Name: `Office — Learn Sent Mail`
+3. Trigger: **"When a new email is sent (V3)"** (Office 365 Outlook)
+4. Add: **"Create file"** (OneDrive for Business)
+   - Folder: `/Office-Drop/sent-mail`
+   - File Name: `@{triggerOutputs()?['body/id']}.json`
+   - File Content:
+```
+{
+  "id": "@{triggerOutputs()?['body/id']}",
+  "subject": "@{triggerOutputs()?['body/subject']}",
+  "to": "@{triggerOutputs()?['body/toRecipients']}",
+  "body": "@{triggerOutputs()?['body/body']}",
+  "sentDateTime": "@{triggerOutputs()?['body/sentDateTime']}"
+}
+```
+5. **Save**
+
+The server processes these every 5 minutes and builds your writing style profile.
 
 ## Sync Chain
 
