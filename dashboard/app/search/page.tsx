@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { timeAgo, priorityBg } from '@/lib/utils';
+import { timeAgo, priorityBg, sanitizeHtml } from '@/lib/utils';
 import Link from 'next/link';
 
 interface SearchResults {
@@ -110,7 +110,7 @@ export default function SearchPage() {
                       </div>
                       <div
                         className="text-xs text-[var(--text-muted)] mt-0.5 [&_mark]:bg-amber-500/30 [&_mark]:text-[var(--text)]"
-                        dangerouslySetInnerHTML={{ __html: e.snippet }}
+                        dangerouslySetInnerHTML={{ __html: sanitizeHtml(e.snippet) }}
                       />
                     </div>
                   </Link>
@@ -133,7 +133,7 @@ export default function SearchPage() {
                     {e.snippet && (
                       <div
                         className="text-xs text-[var(--text-muted)] mt-1 [&_mark]:bg-amber-500/30 [&_mark]:text-[var(--text)]"
-                        dangerouslySetInnerHTML={{ __html: e.snippet }}
+                        dangerouslySetInnerHTML={{ __html: sanitizeHtml(e.snippet) }}
                       />
                     )}
                   </div>

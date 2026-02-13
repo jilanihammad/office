@@ -16,7 +16,18 @@ export function getDb() {
   db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  db.pragma('busy_timeout = 5000');     // Wait up to 5s on lock contention
+  db.pragma('wal_autocheckpoint = 1000'); // Auto-checkpoint every 1000 pages
   initSchema(db);
+  
+  // Additional indexes for large inbox performance
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_threads_latest ON threads(latest_message_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_classifications_priority ON classifications(priority);
+    CREATE INDEX IF NOT EXISTS idx_commitments_status_due ON commitments(status, due_date);
+    CREATE INDEX IF NOT EXISTS idx_drafts_conversation ON drafts(conversation_id);
+  `);
+  
   return db;
 }
 

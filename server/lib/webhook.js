@@ -285,6 +285,10 @@ async function classifyIfNeeded(db, conversationId) {
   const thread = db.prepare('SELECT * FROM threads WHERE conversation_id = ?').get(conversationId);
   if (!thread) return;
   
+  // Don't overwrite user-overridden classifications
+  const existing = db.prepare('SELECT overridden FROM classifications WHERE conversation_id = ?').get(conversationId);
+  if (existing?.overridden) return;
+  
   const messages = db.prepare(
     'SELECT * FROM messages WHERE conversation_id = ? ORDER BY received_at ASC'
   ).all(conversationId);
@@ -297,9 +301,15 @@ async function classifyIfNeeded(db, conversationId) {
     });
     
     db.prepare(`
-      INSERT OR REPLACE INTO classifications 
+      INSERT INTO classifications 
       (conversation_id, priority, label, rule_signals, llm_rationale, confidence, needs_reply, classified_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(conversation_id) DO UPDATE SET
+        priority = excluded.priority, label = excluded.label,
+        rule_signals = excluded.rule_signals, llm_rationale = excluded.llm_rationale,
+        confidence = excluded.confidence, needs_reply = excluded.needs_reply,
+        classified_at = excluded.classified_at
+      WHERE classifications.overridden = 0
     `).run(
       conversationId, result.priority, result.label,
       result.rule_signals, result.llm_rationale, result.confidence, result.needs_reply

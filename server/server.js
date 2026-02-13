@@ -34,11 +34,10 @@ app.use(express.json({ limit: '5mb' })); // Limit body size to prevent OOM
 
 const PORT = parseInt(process.env.PORT || '3456');
 
-// --- Global error handler for uncaught sync errors in routes ---
-function wrapSync(fn) {
+// --- Async route wrapper — catches both sync and async errors ---
+function wrap(fn) {
   return (req, res, next) => {
-    try { fn(req, res, next); }
-    catch (err) { res.status(500).json({ error: err.message }); }
+    Promise.resolve(fn(req, res, next)).catch(next);
   };
 }
 
@@ -245,14 +244,14 @@ app.get('/api/brief', (req, res) => {
 });
 
 // --- Manual Sync ---
-app.post('/api/sync', async (req, res) => {
+app.post('/api/sync', wrap(async (req, res) => {
   try {
     const results = await fullSync();
     res.json({ ok: true, results });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // --- Override Classification ---
 app.post('/api/override/:conversationId', (req, res) => {
@@ -316,7 +315,7 @@ app.get('/api/stats', (req, res) => {
 });
 
 // --- Draft Generation ---
-app.post('/api/draft/:conversationId', async (req, res) => {
+app.post('/api/draft/:conversationId', wrap(async (req, res) => {
   const db = getDb();
   const { conversationId } = req.params;
   const { variant = 'concise', instructions } = req.body;
@@ -403,10 +402,10 @@ Write only the reply body. No subject line.`;
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // --- Reclassify ---
-app.post('/api/classify/:conversationId', async (req, res) => {
+app.post('/api/classify/:conversationId', wrap(async (req, res) => {
   const db = getDb();
   const { conversationId } = req.params;
   
@@ -441,7 +440,7 @@ app.post('/api/classify/:conversationId', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // --- Sender Rules ---
 app.get('/api/sender-rules', (req, res) => {
@@ -480,23 +479,23 @@ app.get('/api/outbox/status', (req, res) => {
 });
 
 // --- Commitments ---
-app.post('/api/commitments/extract/:conversationId', async (req, res) => {
+app.post('/api/commitments/extract/:conversationId', wrap(async (req, res) => {
   try {
     const extracted = await extractCommitments(req.params.conversationId);
     res.json({ ok: true, commitments: extracted });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
-app.post('/api/commitments/extract-all', async (req, res) => {
+app.post('/api/commitments/extract-all', wrap(async (req, res) => {
   try {
     const results = await extractAllPending();
     res.json({ ok: true, ...results });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 app.get('/api/commitments/overdue', (req, res) => {
   res.json({ commitments: getOverdue() });
@@ -527,26 +526,26 @@ app.post('/api/search/rebuild', (req, res) => {
 });
 
 // --- Meeting Prep ---
-app.get('/api/prep/:eventId', async (req, res) => {
+app.get('/api/prep/:eventId', wrap(async (req, res) => {
   try {
     const prep = await generateMeetingPrep(req.params.eventId);
     res.json(prep);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
-app.post('/api/prep/upcoming', async (req, res) => {
+app.post('/api/prep/upcoming', wrap(async (req, res) => {
   try {
     const results = await prepUpcoming();
     res.json({ ok: true, results });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // --- Daily Brief (enhanced) ---
-app.get('/api/brief/text', async (req, res) => {
+app.get('/api/brief/text', wrap(async (req, res) => {
   const db = getDb();
   const today = new Date().toISOString().split('T')[0];
   
@@ -600,7 +599,7 @@ app.get('/api/brief/text', async (req, res) => {
   }
   
   res.json({ text, date: today });
-});
+}));
 
 // --- Global error handler ---
 app.use((err, req, res, _next) => {
@@ -609,6 +608,7 @@ app.use((err, req, res, _next) => {
 });
 
 // --- Webhooks (Power Automate) ---
+// Close wrapped routes above
 app.post('/api/webhook/email', verifyWebhook, handleEmailWebhook);
 app.post('/api/webhook/calendar', verifyWebhook, handleCalendarWebhook);
 app.post('/api/webhook/bulk', verifyWebhook, handleBulkImport);
@@ -674,8 +674,15 @@ async function start() {
     });
     console.log('[cron] Commitment extraction + style learning every 5 minutes');
     
-    // Meeting prep: generate briefs for upcoming meetings hourly
+    // WAL checkpoint + meeting prep: hourly
     cron.schedule('0 * * * *', async () => {
+      try {
+        const db = getDb();
+        db.pragma('wal_checkpoint(TRUNCATE)');
+      } catch (err) {
+        console.error('[cron] WAL checkpoint failed:', err.message);
+      }
+      
       try {
         const results = await prepUpcoming();
         if (results.length > 0) {
@@ -692,7 +699,7 @@ async function start() {
   }
   
   // Start server
-  app.listen(PORT, () => {
+  app.listen(PORT, '127.0.0.1', () => {
     console.log(`\n[server] Office running at http://localhost:${PORT}`);
     console.log(`[server] Endpoints:`);
     console.log(`  GET  /api/health            — Status + sync state`);

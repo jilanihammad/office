@@ -81,7 +81,7 @@ export function queueForSend(draftId, options = {}) {
     action: 'reply',
     messageId: latestMsg.id,
     conversationId: draft.conversation_id,
-    subject: `Re: ${(thread?.subject || latestMsg.subject || '').replace(/^Re:\s*/i, '')}`,
+    subject: `Re: ${(thread?.subject || latestMsg.subject || '').replace(/^(Re|Fw|Fwd|SV|VS|AW|TR|RE|FW):\s*/gi, '').trim()}`,
     to: to.join(';'),
     cc: cc.join(';'),
     body: draft.body_text,
@@ -91,10 +91,20 @@ export function queueForSend(draftId, options = {}) {
     internetMessageId: latestMsg.internet_message_id || '',
   };
   
-  // Write to outbox folder
+  // Write to outbox folder (tmp + rename for atomicity, rollback on failure)
   const fileName = `send_${draftId}_${Date.now()}.json`;
   const filePath = path.join(outboxDir, fileName);
-  fs.writeFileSync(filePath, JSON.stringify(outboxEntry, null, 2));
+  const tmpPath = filePath + '.tmp';
+  
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(outboxEntry, null, 2));
+    fs.renameSync(tmpPath, filePath);
+  } catch (writeErr) {
+    // Rollback: restore draft to 'draft' status
+    db.prepare("UPDATE drafts SET status = 'draft' WHERE id = ?").run(draftId);
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    throw new Error(`Failed to write outbox file: ${writeErr.message}`);
+  }
   
   // Update sent timestamp
   db.prepare("UPDATE drafts SET sent_at = datetime('now') WHERE id = ?")

@@ -34,6 +34,19 @@ export function priorityColor(priority: string): string {
   }
 }
 
+/**
+ * Sanitize HTML — only allow <mark> tags (used for search highlights).
+ * Strips everything else to prevent XSS from email content.
+ */
+export function sanitizeHtml(html: string): string {
+  if (!html) return '';
+  // Strip all tags except <mark> and </mark>
+  return html
+    .replace(/<(?!\/?mark\b)[^>]*>/gi, '')
+    .replace(/javascript:/gi, '')
+    .replace(/on\w+\s*=/gi, '');
+}
+
 export function priorityBg(priority: string): string {
   switch (priority) {
     case 'P0': return 'bg-red-500/10 border-red-500/30 text-red-400';
