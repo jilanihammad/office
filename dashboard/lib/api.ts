@@ -1,7 +1,23 @@
 const API = '/api';
 
+// API key for authenticated requests (set via env var or empty for dev mode)
+function getApiKey(): string {
+  if (typeof window !== 'undefined') {
+    return (window as Record<string, string>).__API_KEY || localStorage.getItem('apiKey') || '';
+  }
+  return '';
+}
+
+function authHeaders(): Record<string, string> {
+  const key = getApiKey();
+  return key ? { 'X-Api-Key': key } : {};
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API}${path}`, { cache: 'no-store' });
+  const res = await fetch(`${API}${path}`, {
+    cache: 'no-store',
+    headers: { ...authHeaders() },
+  });
   if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
   return res.json();
 }
@@ -9,7 +25,7 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${API}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);

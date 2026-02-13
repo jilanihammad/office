@@ -22,6 +22,8 @@ const POLL_INTERVAL = parseInt(process.env.DROP_POLL_SECONDS || '10') * 1000;
 
 let watcher = null;
 let isProcessing = false;
+// Track file sizes across polls to detect still-syncing files (issue #10)
+const fileSizeCache = new Map();
 
 /**
  * Start watching the drop folder.
@@ -92,17 +94,38 @@ async function processFolder(srcDir, archiveDir, type) {
   for (const file of files) {
     const filePath = path.join(srcDir, file);
     try {
-      // Skip files still being written (OneDrive sync in progress)
+      // Skip files still being written (issue #10: stable size across 2 polls)
       const stat = fs.statSync(filePath);
+      const cacheKey = filePath;
+      const prevSize = fileSizeCache.get(cacheKey);
+      fileSizeCache.set(cacheKey, stat.size);
+      
+      // Require: file older than 2s AND size stable across 2 polls
       if (Date.now() - stat.mtimeMs < 2000) {
         continue; // File modified <2s ago — likely still syncing
       }
+      if (prevSize === undefined || prevSize !== stat.size) {
+        continue; // Size changed or first seen — wait for next poll
+      }
+      
+      // File is stable — clean from cache
+      fileSizeCache.delete(cacheKey);
       
       const raw = fs.readFileSync(filePath, 'utf-8');
       if (!raw || raw.trim().length === 0) {
         continue; // Empty file — OneDrive placeholder
       }
-      const data = JSON.parse(raw);
+      
+      // Robust JSON parse with error handling
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch (parseErr) {
+        console.error(`[watcher] Corrupt JSON in ${file}: ${parseErr.message}`);
+        const errPath = path.join(archiveDir, `BADJSON_${type}_${file}`);
+        fs.renameSync(filePath, errPath);
+        continue;
+      }
       
       if (type === 'email') {
         await processEmail(data);

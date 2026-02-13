@@ -7,6 +7,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,13 +36,12 @@ describe('Database', () => {
     const required = [
       'classifications', 'commitments', 'events', 'messages',
       'relationship_memory', 'sender_rules', 'style_examples',
-      'sync_state', 'threads'
+      'sync_state', 'threads', 'webhook_events', 'job_locks'
     ];
     
     for (const table of required) {
       assert.ok(tables.includes(table), `Missing table: ${table}`);
     }
-    assert.ok(tables.length >= 11, `Expected at least 11 tables, got ${tables.length}`);
   });
   
   it('creates indexes', () => {
@@ -54,6 +54,9 @@ describe('Database', () => {
     assert.ok(indexes.includes('idx_messages_received'));
     assert.ok(indexes.includes('idx_messages_sender'));
     assert.ok(indexes.includes('idx_events_start'));
+    assert.ok(indexes.includes('idx_threads_latest'));
+    assert.ok(indexes.includes('idx_classifications_priority'));
+    assert.ok(indexes.includes('idx_commitments_status_due'));
   });
   
   it('WAL mode enabled', () => {
@@ -67,16 +70,58 @@ describe('Database', () => {
     const fk = db.pragma('foreign_keys', { simple: true });
     assert.equal(fk, 1);
   });
+  
+  it('busy_timeout is set', () => {
+    const db = getDb();
+    const timeout = db.pragma('busy_timeout', { simple: true });
+    assert.equal(timeout, 5000);
+  });
+  
+  it('events table has prep_manual_edited column', () => {
+    const db = getDb();
+    const cols = db.prepare("PRAGMA table_info(events)").all().map(c => c.name);
+    assert.ok(cols.includes('prep_manual_edited'), 'Missing prep_manual_edited column');
+  });
+  
+  it('webhook_events table supports dedup', () => {
+    const db = getDb();
+    // Insert
+    db.prepare('INSERT OR IGNORE INTO webhook_events (event_id) VALUES (?)').run('test-dedup-1');
+    // Duplicate should be ignored
+    const result = db.prepare('INSERT OR IGNORE INTO webhook_events (event_id) VALUES (?)').run('test-dedup-1');
+    assert.equal(result.changes, 0, 'Duplicate should be ignored');
+    // Cleanup
+    db.prepare('DELETE FROM webhook_events WHERE event_id = ?').run('test-dedup-1');
+  });
+  
+  it('job_locks table supports mutex', () => {
+    const db = getDb();
+    const now = new Date().toISOString();
+    const expires = new Date(Date.now() + 60000).toISOString();
+    
+    // Acquire lock
+    const r1 = db.prepare(
+      'INSERT OR IGNORE INTO job_locks (job_name, locked_at, expires_at) VALUES (?, ?, ?)'
+    ).run('test-lock', now, expires);
+    assert.equal(r1.changes, 1, 'Should acquire lock');
+    
+    // Second attempt should fail
+    const r2 = db.prepare(
+      'INSERT OR IGNORE INTO job_locks (job_name, locked_at, expires_at) VALUES (?, ?, ?)'
+    ).run('test-lock', now, expires);
+    assert.equal(r2.changes, 0, 'Should not acquire duplicate lock');
+    
+    // Release
+    db.prepare('DELETE FROM job_locks WHERE job_name = ?').run('test-lock');
+  });
 });
 
 // ============================================================
 // 2. CLASSIFIER
 // ============================================================
 describe('Classifier', () => {
-  it('boosts direct-to-you emails', async () => {
+  it('loads and exports classifyThread', async () => {
     process.env.USER_EMAIL = 'me@company.com';
-    // We can't easily test classifyThread without a DB with sender_rules
-    // but we can verify the module loads
     const mod = await import('../lib/classifier.js');
     assert.ok(typeof mod.classifyThread === 'function');
   });
@@ -112,9 +157,8 @@ describe('Outbox', () => {
 // 4. SEARCH — FTS5
 // ============================================================
 describe('Search', () => {
-  it('sanitizes single term to prefix search', async () => {
+  it('exports all functions', async () => {
     const mod = await import('../lib/search.js');
-    // Module loads without error
     assert.ok(typeof mod.search === 'function');
     assert.ok(typeof mod.initSearch === 'function');
     assert.ok(typeof mod.rebuildIndex === 'function');
@@ -144,6 +188,25 @@ describe('Commitments', () => {
     assert.ok(typeof mod.getOverdue === 'function');
     assert.ok(typeof mod.markDone === 'function');
     assert.ok(typeof mod.updateDueDate === 'function');
+  });
+  
+  it('markDone updates status', async () => {
+    const { getDb } = await import('../lib/db.js');
+    const db = getDb();
+    
+    // Insert a test commitment
+    const r = db.prepare(
+      "INSERT INTO commitments (owner, description, due_date, source_type, source_id, confidence, status) VALUES ('test', 'test task', '2026-01-01', 'test', 'test-1', 0.9, 'open')"
+    ).run();
+    
+    const { markDone } = await import('../lib/commitments.js');
+    markDone(r.lastInsertRowid);
+    
+    const updated = db.prepare('SELECT status FROM commitments WHERE id = ?').get(r.lastInsertRowid);
+    assert.equal(updated.status, 'done');
+    
+    // Cleanup
+    db.prepare('DELETE FROM commitments WHERE id = ?').run(r.lastInsertRowid);
   });
 });
 
@@ -194,21 +257,37 @@ describe('File Watcher', () => {
 });
 
 // ============================================================
-// 9. WEBHOOK
+// 9. WEBHOOK — HMAC + dedup
 // ============================================================
 describe('Webhook', () => {
   it('verifyWebhook passes when no secret configured', async () => {
     const saved = process.env.WEBHOOK_SECRET;
     process.env.WEBHOOK_SECRET = '';
     
-    const { verifyWebhook } = await import('../lib/webhook.js');
+    // Re-import to pick up env change
+    const mod = await import('../lib/webhook.js');
     
     let nextCalled = false;
     const req = { headers: {} };
     const res = { status: () => ({ json: () => {} }) };
-    verifyWebhook(req, res, () => { nextCalled = true; });
+    mod.verifyWebhook(req, res, () => { nextCalled = true; });
     
     assert.ok(nextCalled);
+    if (saved) process.env.WEBHOOK_SECRET = saved;
+  });
+  
+  it('verifyWebhook rejects invalid static secret', async () => {
+    const saved = process.env.WEBHOOK_SECRET;
+    process.env.WEBHOOK_SECRET = 'my-secret-123';
+    
+    const mod = await import('../lib/webhook.js');
+    
+    let statusCode;
+    const req = { headers: { 'x-webhook-secret': 'wrong' } };
+    const res = { status: (code) => { statusCode = code; return { json: () => {} }; } };
+    mod.verifyWebhook(req, res, () => {});
+    
+    assert.equal(statusCode, 401);
     if (saved) process.env.WEBHOOK_SECRET = saved;
   });
 });
@@ -232,7 +311,6 @@ describe('Graph', () => {
     delete process.env.AZURE_CLIENT_ID;
     delete process.env.AZURE_TENANT_ID;
     
-    // authenticate should throw
     try {
       const { authenticate } = await import('../lib/graph.js');
       await authenticate();
@@ -240,6 +318,156 @@ describe('Graph', () => {
     } catch (err) {
       assert.ok(err.message.includes('AZURE_CLIENT_ID') || err.message.includes('required'));
     }
+  });
+});
+
+// ============================================================
+// 12. SANITIZATION (dashboard utils)
+// ============================================================
+describe('XSS Sanitization', () => {
+  // Test the sanitizeHtml logic inline (same algorithm as dashboard/lib/utils.ts)
+  function sanitizeHtml(html) {
+    if (!html) return '';
+    const parts = html.split(/(<\/?mark>)/gi);
+    let result = '';
+    for (const part of parts) {
+      if (part.toLowerCase() === '<mark>') {
+        result += '<mark>';
+      } else if (part.toLowerCase() === '</mark>') {
+        result += '</mark>';
+      } else {
+        result += part
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+    }
+    return result;
+  }
+  
+  it('preserves <mark> tags', () => {
+    const result = sanitizeHtml('hello <mark>world</mark>');
+    assert.equal(result, 'hello <mark>world</mark>');
+  });
+  
+  it('strips script tags', () => {
+    const result = sanitizeHtml('<script>alert("xss")</script>');
+    assert.ok(!result.includes('<script>'));
+    assert.ok(result.includes('&lt;script&gt;'));
+  });
+  
+  it('strips img onerror', () => {
+    const result = sanitizeHtml('<img src=x onerror=alert(1)>');
+    assert.ok(!result.includes('<img'));
+    assert.ok(result.includes('&lt;img'));
+  });
+  
+  it('handles nested injection in mark', () => {
+    const result = sanitizeHtml('<mark><script>evil</script></mark>');
+    assert.ok(!result.includes('<script>'));
+    assert.ok(result.includes('<mark>&lt;script&gt;'));
+  });
+  
+  it('handles empty input', () => {
+    assert.equal(sanitizeHtml(''), '');
+    assert.equal(sanitizeHtml(null), '');
+  });
+});
+
+// ============================================================
+// 13. WILDCARD MATCHING (ReDoS-safe)
+// ============================================================
+describe('Wildcard Matching', () => {
+  // Replicate the wildcardMatch logic from classifier.js
+  function wildcardMatch(pattern, str) {
+    const parts = pattern.split('%').filter(p => p.length > 0);
+    if (parts.length === 0) return true;
+    let pos = 0;
+    const startsWithWild = pattern.startsWith('%');
+    const endsWithWild = pattern.endsWith('%');
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const idx = str.indexOf(part, pos);
+      if (idx === -1) return false;
+      if (i === 0 && !startsWithWild && idx !== 0) return false;
+      pos = idx + part.length;
+    }
+    if (!endsWithWild && pos !== str.length) return false;
+    return true;
+  }
+  
+  it('matches exact domain wildcard', () => {
+    assert.ok(wildcardMatch('%@company.com', 'john@company.com'));
+    assert.ok(wildcardMatch('%@company.com', 'jane.doe@company.com'));
+  });
+  
+  it('rejects non-matching domain', () => {
+    assert.ok(!wildcardMatch('%@company.com', 'john@other.com'));
+  });
+  
+  it('matches prefix wildcard', () => {
+    assert.ok(wildcardMatch('vip-%', 'vip-john@test.com'));
+    assert.ok(!wildcardMatch('vip-%', 'john@test.com'));
+  });
+  
+  it('handles just % (match all)', () => {
+    assert.ok(wildcardMatch('%', 'anything'));
+    assert.ok(wildcardMatch('%', ''));
+  });
+  
+  it('handles no wildcard (exact match)', () => {
+    assert.ok(wildcardMatch('john@test.com', 'john@test.com'));
+    assert.ok(!wildcardMatch('john@test.com', 'jane@test.com'));
+  });
+});
+
+// ============================================================
+// 14. DATE VALIDATION
+// ============================================================
+describe('Date Validation', () => {
+  it('valid ISO date normalizes correctly', () => {
+    const d = new Date('2026-02-14');
+    assert.ok(!Number.isNaN(d.getTime()));
+    assert.equal(d.toISOString().split('T')[0], '2026-02-14');
+  });
+  
+  it('invalid date is rejected', () => {
+    const d = new Date('not-a-date');
+    assert.ok(Number.isNaN(d.getTime()));
+  });
+  
+  it('empty string date is rejected', () => {
+    const d = new Date('');
+    assert.ok(Number.isNaN(d.getTime()));
+  });
+});
+
+// ============================================================
+// 15. REPLY SUBJECT NORMALIZATION
+// ============================================================
+describe('Reply Subject Normalization', () => {
+  const normalize = (s) => s.replace(/^(Re|Fw|Fwd|SV|VS|AW|TR|RE|FW|Antwort|Antw|Rif|R|RES|ENC|Doorst|Vl|Ynt|Svb):\s*/gi, '').trim();
+  
+  it('strips Re:', () => {
+    assert.equal(normalize('Re: Budget Review'), 'Budget Review');
+  });
+  
+  it('strips SV: (Swedish)', () => {
+    assert.equal(normalize('SV: Budget Review'), 'Budget Review');
+  });
+  
+  it('strips AW: (German)', () => {
+    assert.equal(normalize('AW: Projektbericht'), 'Projektbericht');
+  });
+  
+  it('strips stacked prefixes', () => {
+    assert.equal(normalize('Re: RE: FW: Topic'), 'RE: FW: Topic'); // Strips first only
+  });
+  
+  it('leaves unprefixed subjects alone', () => {
+    assert.equal(normalize('Budget Review'), 'Budget Review');
   });
 });
 

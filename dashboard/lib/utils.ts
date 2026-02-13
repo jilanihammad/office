@@ -36,15 +36,39 @@ export function priorityColor(priority: string): string {
 
 /**
  * Sanitize HTML — only allow <mark> tags (used for search highlights).
- * Strips everything else to prevent XSS from email content.
+ * Strips everything else to prevent XSS from email content. (Issue #3)
+ * 
+ * Strategy: extract <mark>...</mark> segments, escape everything else,
+ * then reconstruct. This avoids regex-bypass attacks.
  */
 export function sanitizeHtml(html: string): string {
   if (!html) return '';
-  // Strip all tags except <mark> and </mark>
-  return html
-    .replace(/<(?!\/?mark\b)[^>]*>/gi, '')
-    .replace(/javascript:/gi, '')
-    .replace(/on\w+\s*=/gi, '');
+  // Split on <mark> and </mark>, keeping them as delimiters
+  const parts = html.split(/(<\/?mark>)/gi);
+  let inMark = false;
+  let result = '';
+  for (const part of parts) {
+    if (part.toLowerCase() === '<mark>') {
+      inMark = true;
+      result += '<mark>';
+    } else if (part.toLowerCase() === '</mark>') {
+      inMark = false;
+      result += '</mark>';
+    } else {
+      // Escape all HTML in content (whether inside or outside mark)
+      result += escapeHtml(part);
+    }
+  }
+  return result;
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export function priorityBg(priority: string): string {

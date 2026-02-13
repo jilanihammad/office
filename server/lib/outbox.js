@@ -76,12 +76,16 @@ export function queueForSend(draftId, options = {}) {
     cc = [];
   }
   
+  // Normalize reply subject — strip common intl prefixes (issue #22)
+  const rawSubject = thread?.subject || latestMsg.subject || '';
+  const cleanSubject = rawSubject.replace(/^(Re|Fw|Fwd|SV|VS|AW|TR|RE|FW|Antwort|Antw|Rif|R|RES|ENC|Doorst|Vl|Ynt|Svb):\s*/gi, '').trim();
+  
   // Build the outbox JSON
   const outboxEntry = {
     action: 'reply',
     messageId: latestMsg.id,
     conversationId: draft.conversation_id,
-    subject: `Re: ${(thread?.subject || latestMsg.subject || '').replace(/^(Re|Fw|Fwd|SV|VS|AW|TR|RE|FW):\s*/gi, '').trim()}`,
+    subject: `Re: ${cleanSubject}`,
     to: to.join(';'),
     cc: cc.join(';'),
     body: draft.body_text,

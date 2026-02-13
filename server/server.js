@@ -29,10 +29,29 @@ import { generateMeetingPrep, prepUpcoming } from './lib/meetingprep.js';
 import { processSentMail, getStyleContext, updateRelationships } from './lib/stylelearner.js';
 
 const app = express();
-app.use(cors());
+
+// Restrict CORS to dashboard origin only (issue #1)
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+}));
 app.use(express.json({ limit: '5mb' })); // Limit body size to prevent OOM
 
 const PORT = parseInt(process.env.PORT || '3456');
+
+// --- API key middleware (issue #1) ---
+// Set API_KEY in .env to require authentication. Skip health endpoint.
+const API_KEY = process.env.API_KEY || '';
+function requireApiKey(req, res, next) {
+  if (!API_KEY) return next(); // No key configured — dev mode
+  if (req.path === '/api/health') return next(); // Health always open
+  const provided = req.headers['x-api-key'] || req.query.apiKey;
+  if (provided !== API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+}
+app.use('/api', requireApiKey);
 
 // --- Async route wrapper — catches both sync and async errors ---
 function wrap(fn) {
@@ -243,13 +262,37 @@ app.get('/api/brief', (req, res) => {
   });
 });
 
+// --- Job lock helper (issue #7: prevent concurrent overlapping jobs) ---
+function acquireJobLock(jobName, ttlMs = 300000) {
+  const db = getDb();
+  const now = new Date().toISOString();
+  const expires = new Date(Date.now() + ttlMs).toISOString();
+  // Release expired locks first
+  db.prepare('DELETE FROM job_locks WHERE job_name = ? AND expires_at < ?').run(jobName, now);
+  // Try to acquire
+  const result = db.prepare(
+    'INSERT OR IGNORE INTO job_locks (job_name, locked_at, expires_at) VALUES (?, ?, ?)'
+  ).run(jobName, now, expires);
+  return result.changes > 0;
+}
+
+function releaseJobLock(jobName) {
+  const db = getDb();
+  db.prepare('DELETE FROM job_locks WHERE job_name = ?').run(jobName);
+}
+
 // --- Manual Sync ---
 app.post('/api/sync', wrap(async (req, res) => {
+  if (!acquireJobLock('sync')) {
+    return res.status(429).json({ error: 'Sync already in progress' });
+  }
   try {
     const results = await fullSync();
     res.json({ ok: true, results });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  } finally {
+    releaseJobLock('sync');
   }
 }));
 
@@ -512,15 +555,23 @@ app.patch('/api/commitments/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// --- Search ---
+// --- Search (issue #18: cap query length, throttle rebuild) ---
 app.get('/api/search', (req, res) => {
   const { q, limit, type } = req.query;
   if (!q) return res.json({ emails: [], events: [], commitments: [] });
-  const results = search(q, { limit: safeInt(limit, 20), type });
+  // Cap query length to prevent CPU abuse
+  const safeQuery = String(q).slice(0, 500);
+  const results = search(safeQuery, { limit: Math.min(safeInt(limit, 20), 100), type });
   res.json(results);
 });
 
+let lastRebuild = 0;
 app.post('/api/search/rebuild', (req, res) => {
+  const now = Date.now();
+  if (now - lastRebuild < 60000) {
+    return res.status(429).json({ error: 'Rebuild throttled — wait 60s' });
+  }
+  lastRebuild = now;
   const result = rebuildIndex();
   res.json({ ok: true, ...result });
 });
@@ -543,6 +594,18 @@ app.post('/api/prep/upcoming', wrap(async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 }));
+
+// --- Update prep brief (issue #21: manual edit flag) ---
+app.patch('/api/prep/:eventId', (req, res) => {
+  const db = getDb();
+  const { eventId } = req.params;
+  const { brief } = req.body;
+  if (typeof brief !== 'string') return res.status(400).json({ error: 'brief required' });
+  db.prepare(
+    'UPDATE events SET prep_brief = ?, prep_manual_edited = 1, prep_generated_at = datetime(\'now\') WHERE id = ?'
+  ).run(brief, eventId);
+  res.json({ ok: true });
+});
 
 // --- Daily Brief (enhanced) ---
 app.get('/api/brief/text', wrap(async (req, res) => {
@@ -601,10 +664,14 @@ app.get('/api/brief/text', wrap(async (req, res) => {
   res.json({ text, date: today });
 }));
 
-// --- Global error handler ---
+// --- Global error handler (issue #20: sanitize error responses) ---
 app.use((err, req, res, _next) => {
   console.error(`[error] ${req.method} ${req.path}:`, err.message);
-  res.status(500).json({ error: err.message });
+  // Never leak SQL, stack traces, or internal details to clients
+  const safeMessage = process.env.NODE_ENV === 'development'
+    ? err.message
+    : 'Internal server error';
+  res.status(500).json({ error: safeMessage });
 });
 
 // --- Webhooks (Power Automate) ---
@@ -636,9 +703,11 @@ async function start() {
       
       const interval = parseInt(process.env.SYNC_INTERVAL_MINUTES || '15');
       cron.schedule(`*/${interval} * * * *`, async () => {
+        if (!acquireJobLock('sync')) return; // Skip if already running
         console.log(`[cron] Running sync (every ${interval} min)...`);
         try { await fullSync(); }
         catch (err) { console.error('[cron] Sync failed:', err.message); }
+        finally { releaseJobLock('sync'); }
       });
       console.log(`[cron] Sync scheduled every ${interval} minutes`);
     } catch (err) {
@@ -656,6 +725,7 @@ async function start() {
     
     // Periodic tasks: commitment extraction, style learning, meeting prep, relationship updates
     cron.schedule('*/5 * * * *', async () => {
+      if (!acquireJobLock('periodic-tasks', 120000)) return; // 2 min TTL
       try {
         // Extract commitments from new P0/P1 threads
         const commitResults = await extractAllPending();
@@ -670,6 +740,8 @@ async function start() {
         updateRelationships(dropFolder);
       } catch (err) {
         console.error('[cron] Periodic task failed:', err.message);
+      } finally {
+        releaseJobLock('periodic-tasks');
       }
     });
     console.log('[cron] Commitment extraction + style learning every 5 minutes');
@@ -683,6 +755,7 @@ async function start() {
         console.error('[cron] WAL checkpoint failed:', err.message);
       }
       
+      if (!acquireJobLock('meeting-prep', 300000)) return; // 5 min TTL
       try {
         const results = await prepUpcoming();
         if (results.length > 0) {
@@ -690,6 +763,8 @@ async function start() {
         }
       } catch (err) {
         console.error('[cron] Meeting prep failed:', err.message);
+      } finally {
+        releaseJobLock('meeting-prep');
       }
     });
     console.log('[cron] Meeting prep briefs generated hourly');

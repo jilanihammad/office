@@ -28,6 +28,11 @@ export function getDb() {
     CREATE INDEX IF NOT EXISTS idx_drafts_conversation ON drafts(conversation_id);
   `);
   
+  // Migrations for existing databases
+  try {
+    db.exec('ALTER TABLE events ADD COLUMN prep_manual_edited INTEGER DEFAULT 0');
+  } catch { /* column already exists */ }
+  
   return db;
 }
 
@@ -108,6 +113,7 @@ function initSchema(db) {
       importance TEXT,
       prep_brief TEXT,
       prep_generated_at TEXT,
+      prep_manual_edited INTEGER DEFAULT 0,
       synced_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -183,6 +189,19 @@ function initSchema(db) {
       key TEXT PRIMARY KEY,
       value TEXT,
       updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Webhook event dedup (replay protection)
+    CREATE TABLE IF NOT EXISTS webhook_events (
+      event_id TEXT PRIMARY KEY,
+      received_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Job locks (concurrent execution mutex)
+    CREATE TABLE IF NOT EXISTS job_locks (
+      job_name TEXT PRIMARY KEY,
+      locked_at TEXT,
+      expires_at TEXT
     );
   `);
 }

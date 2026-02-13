@@ -30,7 +30,8 @@ export async function syncMessages() {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
   
-  const insertMany = db.transaction((msgs) => {
+  // Issue #5: Wrap messages + delta token + sync timestamp in one transaction
+  const insertMany = db.transaction((msgs, deltaLk) => {
     for (const m of msgs) {
       upsert.run(
         m.id, m.conversation_id, m.subject, m.sender_email, m.sender_name,
@@ -38,25 +39,25 @@ export async function syncMessages() {
         m.received_at, m.is_read, m.has_attachments, m.importance, m.internet_message_id
       );
     }
-  });
-  
-  insertMany(messages);
-  
-  // Save new delta link
-  if (newDeltaLink) {
+    
+    // Save new delta link inside same transaction
+    if (deltaLk) {
+      db.prepare(
+        'INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES (?, ?, datetime(\'now\'))'
+      ).run('mail_delta_link', deltaLk);
+    }
+    
+    // Save last sync time
     db.prepare(
       'INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES (?, ?, datetime(\'now\'))'
-    ).run('mail_delta_link', newDeltaLink);
-  }
+    ).run('last_mail_sync', new Date().toISOString());
+  });
+  
+  insertMany(messages, newDeltaLink);
   
   // Update thread aggregates for affected conversations
   const conversationIds = [...new Set(messages.map(m => m.conversation_id))];
   await updateThreads(db, conversationIds);
-  
-  // Save last sync time
-  db.prepare(
-    'INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES (?, ?, datetime(\'now\'))'
-  ).run('last_mail_sync', new Date().toISOString());
   
   return { synced: messages.length, conversations: conversationIds.length };
 }

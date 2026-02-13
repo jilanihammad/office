@@ -22,7 +22,7 @@ const MODEL_ID = process.env.LLM_MODEL || 'us.anthropic.claude-opus-4-6-v1';
  * @returns {string} Assistant response text
  */
 export async function chat(systemPrompt, messages, options = {}) {
-  const { maxTokens = 4096, temperature = 0.3 } = options;
+  const { maxTokens = 4096, temperature = 0.3, timeoutMs = 60000 } = options;
 
   const body = {
     anthropic_version: 'bedrock-2023-05-31',
@@ -42,10 +42,17 @@ export async function chat(systemPrompt, messages, options = {}) {
     body: JSON.stringify(body),
   });
 
-  const response = await client.send(command);
-  const result = JSON.parse(new TextDecoder().decode(response.body));
-
-  return result.content?.[0]?.text || '';
+  // Issue #14: Add timeout to prevent hung LLM calls
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const response = await client.send(command, { abortSignal: controller.signal });
+    const result = JSON.parse(new TextDecoder().decode(response.body));
+    return result.content?.[0]?.text || '';
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

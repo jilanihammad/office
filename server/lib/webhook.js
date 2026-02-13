@@ -10,25 +10,74 @@
  *   3. Body: JSON with the fields below
  *   4. Header: X-Webhook-Secret: <your secret>
  */
+import crypto from 'crypto';
 import { getDb } from './db.js';
 import { classifyThread } from './classifier.js';
 
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
+const getWebhookSecret = () => process.env.WEBHOOK_SECRET || '';
+const MAX_TIMESTAMP_SKEW_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Verify webhook secret header.
+ * Verify webhook — supports HMAC signature (preferred) or static secret (legacy).
+ * 
+ * HMAC mode: Headers X-Webhook-Timestamp + X-Webhook-Signature
+ *   signature = HMAC-SHA256(secret, timestamp + '.' + rawBody)
+ * Legacy mode: Header X-Webhook-Secret (static comparison)
+ * 
+ * (Issue #2: replay protection via HMAC + timestamp + idempotency)
  */
 export function verifyWebhook(req, res, next) {
-  if (!WEBHOOK_SECRET) {
+  const secret = getWebhookSecret();
+  if (!secret) {
     // No secret configured — allow all (dev mode)
     return next();
   }
   
-  const provided = req.headers['x-webhook-secret'];
-  if (provided !== WEBHOOK_SECRET) {
-    return res.status(401).json({ error: 'Invalid webhook secret' });
+  const timestamp = req.headers['x-webhook-timestamp'];
+  const signature = req.headers['x-webhook-signature'];
+  
+  if (timestamp && signature) {
+    // HMAC mode
+    const ts = parseInt(timestamp);
+    if (Number.isNaN(ts) || Math.abs(Date.now() - ts) > MAX_TIMESTAMP_SKEW_MS) {
+      return res.status(401).json({ error: 'Webhook timestamp expired or invalid' });
+    }
+    const rawBody = JSON.stringify(req.body);
+    const expected = crypto.createHmac('sha256', secret)
+      .update(`${timestamp}.${rawBody}`)
+      .digest('hex');
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+      return res.status(401).json({ error: 'Invalid webhook signature' });
+    }
+  } else {
+    // Legacy static secret mode (backward compatible)
+    const provided = req.headers['x-webhook-secret'];
+    if (provided !== secret) {
+      return res.status(401).json({ error: 'Invalid webhook secret' });
+    }
   }
+  
   next();
+}
+
+/**
+ * Check idempotency — returns true if this event was already processed (issue #12).
+ */
+function isDuplicate(eventId) {
+  if (!eventId) return false;
+  const db = getDb();
+  const result = db.prepare(
+    'INSERT OR IGNORE INTO webhook_events (event_id) VALUES (?)'
+  ).run(eventId);
+  return result.changes === 0; // 0 changes = already existed
+}
+
+/**
+ * Clean up old dedup records (keep 7 days).
+ */
+function pruneWebhookEvents() {
+  const db = getDb();
+  db.prepare("DELETE FROM webhook_events WHERE received_at < datetime('now', '-7 days')").run();
 }
 
 /**
@@ -56,59 +105,71 @@ export async function handleEmailWebhook(req, res) {
   const emails = Array.isArray(req.body) ? req.body : [req.body];
   
   let processed = 0;
+  let skippedDupes = 0;
   const conversationIds = new Set();
   
-  for (const email of emails) {
-    if (!email.id || !email.conversationId) {
-      continue;
+  // Wrap all DB writes in a transaction for atomicity (issue #5)
+  const insertEmails = db.transaction((emailBatch) => {
+    for (const email of emailBatch) {
+      if (!email.id || !email.conversationId) continue;
+      
+      // Idempotency check (issue #12)
+      if (isDuplicate(`email:${email.id}`)) {
+        skippedDupes++;
+        continue;
+      }
+      
+      const toList = parseEmailList(email.to || email.toRecipients);
+      const ccList = parseEmailList(email.cc || email.ccRecipients);
+      
+      db.prepare(`
+        INSERT OR REPLACE INTO messages 
+        (id, conversation_id, subject, sender_email, sender_name, to_recipients, cc_recipients,
+         body_preview, body_text, received_at, is_read, has_attachments, importance, internet_message_id, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(
+        email.id,
+        email.conversationId,
+        email.subject || '',
+        parseFromField(email.from || email.fromEmail).email,
+        email.fromName || parseFromField(email.from).name,
+        JSON.stringify(toList),
+        JSON.stringify(ccList),
+        email.bodyPreview || '',
+        stripHtml(email.body || email.bodyPreview || ''),
+        email.receivedDateTime || new Date().toISOString(),
+        email.isRead ? 1 : 0,
+        email.hasAttachments ? 1 : 0,
+        email.importance || 'normal',
+        email.internetMessageId || ''
+      );
+      
+      conversationIds.add(email.conversationId);
+      processed++;
     }
     
-    const toList = parseEmailList(email.to || email.toRecipients);
-    const ccList = parseEmailList(email.cc || email.ccRecipients);
-    
-    // Upsert message
-    db.prepare(`
-      INSERT OR REPLACE INTO messages 
-      (id, conversation_id, subject, sender_email, sender_name, to_recipients, cc_recipients,
-       body_preview, body_text, received_at, is_read, has_attachments, importance, internet_message_id, synced_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(
-      email.id,
-      email.conversationId,
-      email.subject || '',
-      parseFromField(email.from || email.fromEmail).email,
-      email.fromName || parseFromField(email.from).name,
-      JSON.stringify(toList),
-      JSON.stringify(ccList),
-      email.bodyPreview || '',
-      stripHtml(email.body || email.bodyPreview || ''),
-      email.receivedDateTime || new Date().toISOString(),
-      email.isRead ? 1 : 0,
-      email.hasAttachments ? 1 : 0,
-      email.importance || 'normal',
-      email.internetMessageId || ''
-    );
-    
-    conversationIds.add(email.conversationId);
-    processed++;
-  }
+    // Update sync state inside same transaction
+    db.prepare(
+      "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('last_mail_sync', ?, datetime('now'))"
+    ).run(new Date().toISOString());
+  });
+  
+  insertEmails(emails);
   
   // Update thread aggregates
   for (const convId of conversationIds) {
     updateThread(db, convId);
   }
   
-  // Classify new/updated threads
+  // Classify new/updated threads (outside transaction — LLM calls are slow)
   for (const convId of conversationIds) {
     await classifyIfNeeded(db, convId);
   }
   
-  // Update sync state
-  db.prepare(
-    "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('last_mail_sync', ?, datetime('now'))"
-  ).run(new Date().toISOString());
+  // Periodic dedup table cleanup
+  if (Math.random() < 0.01) pruneWebhookEvents();
   
-  res.json({ ok: true, processed, conversations: conversationIds.size });
+  res.json({ ok: true, processed, skippedDupes, conversations: conversationIds.size });
 }
 
 /**
@@ -134,53 +195,64 @@ export function handleCalendarWebhook(req, res) {
   const events = Array.isArray(req.body) ? req.body : [req.body];
   
   let processed = 0;
+  let skippedDupes = 0;
   
-  for (const event of events) {
-    if (!event.id || !event.subject) continue;
-    
-    let attendees;
-    if (typeof event.attendees === 'string') {
-      // Could be semicolon-separated emails or JSON
-      try {
-        attendees = JSON.parse(event.attendees);
-      } catch {
-        attendees = event.attendees.split(';').map(e => ({
-          email: e.trim(),
-          name: '',
-          response: 'none',
-        })).filter(a => a.email);
+  // Wrap in transaction for atomicity (issue #5)
+  const insertEvents = db.transaction((eventBatch) => {
+    for (const event of eventBatch) {
+      if (!event.id || !event.subject) continue;
+      
+      // Idempotency check (issue #12)
+      if (isDuplicate(`cal:${event.id}`)) {
+        skippedDupes++;
+        continue;
       }
-    } else {
-      attendees = event.attendees || [];
+      
+      let attendees;
+      if (typeof event.attendees === 'string') {
+        try {
+          attendees = JSON.parse(event.attendees);
+        } catch {
+          attendees = event.attendees.split(';').map(e => ({
+            email: e.trim(),
+            name: '',
+            response: 'none',
+          })).filter(a => a.email);
+        }
+      } else {
+        attendees = event.attendees || [];
+      }
+      
+      db.prepare(`
+        INSERT OR REPLACE INTO events 
+        (id, subject, start_time, end_time, location, organizer_email, organizer_name,
+         attendees, body_text, is_recurring, importance, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      `).run(
+        event.id,
+        event.subject,
+        event.start || '',
+        event.end || '',
+        event.location || '',
+        (event.organizer || '').toLowerCase(),
+        event.organizerName || '',
+        JSON.stringify(attendees),
+        stripHtml(event.body || ''),
+        event.isRecurring ? 1 : 0,
+        event.importance || 'normal'
+      );
+      
+      processed++;
     }
     
-    db.prepare(`
-      INSERT OR REPLACE INTO events 
-      (id, subject, start_time, end_time, location, organizer_email, organizer_name,
-       attendees, body_text, is_recurring, importance, synced_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(
-      event.id,
-      event.subject,
-      event.start || '',
-      event.end || '',
-      event.location || '',
-      (event.organizer || '').toLowerCase(),
-      event.organizerName || '',
-      JSON.stringify(attendees),
-      stripHtml(event.body || ''),
-      event.isRecurring ? 1 : 0,
-      event.importance || 'normal'
-    );
-    
-    processed++;
-  }
+    db.prepare(
+      "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('last_calendar_sync', ?, datetime('now'))"
+    ).run(new Date().toISOString());
+  });
   
-  db.prepare(
-    "INSERT OR REPLACE INTO sync_state (key, value, updated_at) VALUES ('last_calendar_sync', ?, datetime('now'))"
-  ).run(new Date().toISOString());
+  insertEvents(events);
   
-  res.json({ ok: true, processed });
+  res.json({ ok: true, processed, skippedDupes });
 }
 
 /**
