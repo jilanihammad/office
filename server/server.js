@@ -44,8 +44,11 @@ const PORT = parseInt(process.env.PORT || '3456');
 const API_KEY = process.env.API_KEY || '';
 function requireApiKey(req, res, next) {
   if (!API_KEY) return next(); // No key configured — dev mode
-  if (req.path === '/api/health') return next(); // Health always open
-  const provided = req.headers['x-api-key'] || req.query.apiKey;
+  // Fix #11: mounted at /api so req.path is relative; fix #12: exempt webhooks
+  if (req.path === '/health') return next();
+  if (req.path.startsWith('/webhook/')) return next(); // Webhooks use their own auth
+  // Fix #13: header-only auth, no query string
+  const provided = req.headers['x-api-key'];
   if (provided !== API_KEY) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -71,6 +74,13 @@ function expandTilde(p) {
 function safeInt(val, defaultVal = 0) {
   const n = parseInt(val);
   return Number.isNaN(n) ? defaultVal : n;
+}
+
+// --- Safe error response (fix #10: don't leak internals) ---
+function safeError(res, err, statusCode = 500) {
+  console.error(`[error]`, err.message);
+  const msg = process.env.NODE_ENV === 'development' ? err.message : 'Internal server error';
+  return res.status(statusCode).json({ error: msg });
 }
 
 // --- Health ---
@@ -111,7 +121,7 @@ app.get('/api/threads', (req, res) => {
   
   query += ' ORDER BY CASE c.priority WHEN \'P0\' THEN 0 WHEN \'P1\' THEN 1 WHEN \'P2\' THEN 2 WHEN \'P3\' THEN 3 ELSE 4 END, t.latest_message_at DESC';
   query += ' LIMIT ? OFFSET ?';
-  params.push(safeInt(limit, 50), safeInt(offset, 0));
+  params.push(Math.max(1, Math.min(safeInt(limit, 50), 200)), Math.max(0, safeInt(offset, 0)));
   
   const threads = db.prepare(query).all(...params);
   
@@ -290,7 +300,7 @@ app.post('/api/sync', wrap(async (req, res) => {
     const results = await fullSync();
     res.json({ ok: true, results });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err);
   } finally {
     releaseJobLock('sync');
   }
@@ -443,7 +453,7 @@ Write only the reply body. No subject line.`;
       },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err);
   }
 }));
 
@@ -481,7 +491,7 @@ app.post('/api/classify/:conversationId', wrap(async (req, res) => {
     
     res.json({ ok: true, classification: result });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err);
   }
 }));
 
@@ -527,7 +537,7 @@ app.post('/api/commitments/extract/:conversationId', wrap(async (req, res) => {
     const extracted = await extractCommitments(req.params.conversationId);
     res.json({ ok: true, commitments: extracted });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err);
   }
 }));
 
@@ -536,7 +546,7 @@ app.post('/api/commitments/extract-all', wrap(async (req, res) => {
     const results = await extractAllPending();
     res.json({ ok: true, ...results });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err);
   }
 }));
 
@@ -551,7 +561,13 @@ app.post('/api/commitments/:id/done', (req, res) => {
 
 app.patch('/api/commitments/:id', (req, res) => {
   const { due_date } = req.body;
-  if (due_date) updateDueDate(safeInt(req.params.id), due_date);
+  if (due_date) {
+    // Fix #15: strict YYYY-MM-DD validation
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(due_date) || Number.isNaN(new Date(due_date).getTime())) {
+      return res.status(400).json({ error: 'Invalid date format — use YYYY-MM-DD' });
+    }
+    updateDueDate(safeInt(req.params.id), due_date);
+  }
   res.json({ ok: true });
 });
 
@@ -561,7 +577,7 @@ app.get('/api/search', (req, res) => {
   if (!q) return res.json({ emails: [], events: [], commitments: [] });
   // Cap query length to prevent CPU abuse
   const safeQuery = String(q).slice(0, 500);
-  const results = search(safeQuery, { limit: Math.min(safeInt(limit, 20), 100), type });
+  const results = search(safeQuery, { limit: Math.max(1, Math.min(safeInt(limit, 20), 100)), type });
   res.json(results);
 });
 
@@ -582,7 +598,7 @@ app.get('/api/prep/:eventId', wrap(async (req, res) => {
     const prep = await generateMeetingPrep(req.params.eventId);
     res.json(prep);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err);
   }
 }));
 
@@ -591,7 +607,7 @@ app.post('/api/prep/upcoming', wrap(async (req, res) => {
     const results = await prepUpcoming();
     res.json({ ok: true, results });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    safeError(res, err);
   }
 }));
 

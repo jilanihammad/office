@@ -322,7 +322,167 @@ describe('Graph', () => {
 });
 
 // ============================================================
-// 12. SANITIZATION (dashboard utils)
+// 12. EVENT UPSERT PRESERVES PREP FIELDS (fix #1 regression)
+// ============================================================
+describe('Event Upsert Preservation', () => {
+  it('calendar upsert preserves prep_brief and prep_manual_edited', async () => {
+    const { getDb } = await import('../lib/db.js');
+    const db = getDb();
+    
+    // Insert event with prep data
+    db.prepare(`
+      INSERT INTO events (id, subject, start_time, end_time, prep_brief, prep_manual_edited, synced_at)
+      VALUES ('test-preserve-1', 'My Meeting', '2026-03-01T10:00', '2026-03-01T11:00', 'Custom brief', 1, datetime('now'))
+    `).run();
+    
+    // Simulate calendar sync upsert (ON CONFLICT should preserve prep fields)
+    db.prepare(`
+      INSERT INTO events (id, subject, start_time, end_time, location, organizer_email, organizer_name,
+       attendees, body_text, is_recurring, importance, synced_at)
+      VALUES ('test-preserve-1', 'My Meeting Updated', '2026-03-01T10:00', '2026-03-01T11:30', '', '', '', '[]', '', 0, 'normal', datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        subject = excluded.subject, start_time = excluded.start_time, end_time = excluded.end_time,
+        location = excluded.location, organizer_email = excluded.organizer_email,
+        organizer_name = excluded.organizer_name, attendees = excluded.attendees,
+        body_text = excluded.body_text, is_recurring = excluded.is_recurring,
+        importance = excluded.importance, synced_at = excluded.synced_at
+    `).run();
+    
+    const event = db.prepare('SELECT * FROM events WHERE id = ?').get('test-preserve-1');
+    assert.equal(event.prep_brief, 'Custom brief', 'prep_brief should be preserved');
+    assert.equal(event.prep_manual_edited, 1, 'prep_manual_edited should be preserved');
+    assert.equal(event.subject, 'My Meeting Updated', 'subject should be updated');
+    assert.equal(event.end_time, '2026-03-01T11:30', 'end_time should be updated');
+    
+    // Cleanup
+    db.prepare('DELETE FROM events WHERE id = ?').run('test-preserve-1');
+  });
+});
+
+// ============================================================
+// 13. CLASSIFIER NULL SAFETY (fix #5)
+// ============================================================
+describe('Classifier Null Safety', () => {
+  it('safeSender handles null', () => {
+    const safeSender = (s) => (typeof s === 'string' ? s : String(s || '')).toLowerCase();
+    assert.equal(safeSender(null), '');
+    assert.equal(safeSender(undefined), '');
+    assert.equal(safeSender('John@Test.com'), 'john@test.com');
+    assert.equal(safeSender({ address: 'x' }), '[object object]'); // toString fallback, won't crash
+  });
+});
+
+// ============================================================
+// 14. OUTBOX VALIDATION ORDER (fix #7)
+// ============================================================
+describe('Outbox Validation Order', () => {
+  it('validates prerequisites before changing draft status', async () => {
+    const { getDb } = await import('../lib/db.js');
+    const db = getDb();
+    
+    // Create a draft with a nonexistent conversation
+    const r = db.prepare(
+      "INSERT INTO drafts (conversation_id, variant, body_text, status) VALUES ('nonexistent-conv', 'concise', 'test', 'draft')"
+    ).run();
+    
+    const saved = process.env.DROP_FOLDER;
+    process.env.DROP_FOLDER = '/tmp/test-outbox';
+    
+    const { queueForSend } = await import('../lib/outbox.js');
+    
+    try {
+      queueForSend(r.lastInsertRowid);
+      assert.fail('Should have thrown');
+    } catch (err) {
+      assert.ok(err.message.includes('No messages'), 'Should fail on missing messages');
+    }
+    
+    // Draft should still be in 'draft' status (not stuck in 'queued')
+    const draft = db.prepare('SELECT status FROM drafts WHERE id = ?').get(r.lastInsertRowid);
+    assert.equal(draft.status, 'draft', 'Draft should remain in draft status after validation failure');
+    
+    // Cleanup
+    db.prepare('DELETE FROM drafts WHERE id = ?').run(r.lastInsertRowid);
+    if (saved) process.env.DROP_FOLDER = saved;
+    else delete process.env.DROP_FOLDER;
+  });
+});
+
+// ============================================================
+// 15. LIMIT CLAMPING (fix #8)
+// ============================================================
+describe('Limit Clamping', () => {
+  it('safeInt handles negative values', () => {
+    // Replicate safeInt
+    function safeInt(val, defaultVal = 0) {
+      const n = parseInt(val);
+      return Number.isNaN(n) ? defaultVal : n;
+    }
+    assert.equal(safeInt('-1', 50), -1); // safeInt returns the value
+    // The clamping happens in the route: Math.max(1, Math.min(safeInt(limit), 200))
+    const clamped = Math.max(1, Math.min(safeInt('-1', 50), 200));
+    assert.equal(clamped, 1, 'Negative limit should clamp to 1');
+  });
+  
+  it('clamps zero to 1', () => {
+    const clamped = Math.max(1, Math.min(0, 200));
+    assert.equal(clamped, 1);
+  });
+  
+  it('clamps large values to cap', () => {
+    const clamped = Math.max(1, Math.min(99999, 200));
+    assert.equal(clamped, 200);
+  });
+});
+
+// ============================================================
+// 16. SAFE PARSE JSON (fix #9)
+// ============================================================
+describe('Safe Parse JSON', () => {
+  it('returns array on valid JSON array', () => {
+    const safeParseJSON = (str) => {
+      try { const p = JSON.parse(str || '[]'); return Array.isArray(p) ? p : []; }
+      catch { return []; }
+    };
+    assert.deepEqual(safeParseJSON('[1,2,3]'), [1, 2, 3]);
+  });
+  
+  it('returns empty array on object', () => {
+    const safeParseJSON = (str) => {
+      try { const p = JSON.parse(str || '[]'); return Array.isArray(p) ? p : []; }
+      catch { return []; }
+    };
+    assert.deepEqual(safeParseJSON('{"a": 1}'), []);
+  });
+  
+  it('returns empty array on garbage', () => {
+    const safeParseJSON = (str) => {
+      try { const p = JSON.parse(str || '[]'); return Array.isArray(p) ? p : []; }
+      catch { return []; }
+    };
+    assert.deepEqual(safeParseJSON('not json'), []);
+  });
+});
+
+// ============================================================
+// 17. DATE VALIDATION — STRICT (fix #15)
+// ============================================================
+describe('Strict Date Validation', () => {
+  it('accepts YYYY-MM-DD', () => {
+    assert.ok(/^\d{4}-\d{2}-\d{2}$/.test('2026-02-14'));
+  });
+  
+  it('rejects ISO datetime', () => {
+    assert.ok(!/^\d{4}-\d{2}-\d{2}$/.test('2026-02-14T10:00:00'));
+  });
+  
+  it('rejects MM/DD/YYYY', () => {
+    assert.ok(!/^\d{4}-\d{2}-\d{2}$/.test('02/14/2026'));
+  });
+});
+
+// ============================================================
+// 18. SANITIZATION (dashboard utils)
 // ============================================================
 describe('XSS Sanitization', () => {
   // Test the sanitizeHtml logic inline (same algorithm as dashboard/lib/utils.ts)

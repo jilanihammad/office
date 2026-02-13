@@ -221,6 +221,10 @@ export async function prepUpcoming() {
 }
 
 function safeParseJSON(str) {
-  try { return JSON.parse(str || '[]'); }
-  catch { return str; }
+  try {
+    const parsed = JSON.parse(str || '[]');
+    return Array.isArray(parsed) ? parsed : []; // Fix #9: always return array
+  } catch {
+    return []; // Fix #9: never return raw string
+  }
 }

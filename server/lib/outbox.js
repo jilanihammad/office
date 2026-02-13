@@ -34,27 +34,27 @@ export function queueForSend(draftId, options = {}) {
     fs.mkdirSync(outboxDir, { recursive: true });
   }
   
-  // Get the draft (atomic check-and-update to prevent double-send)
+  // Get the draft
   const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
   if (!draft) throw new Error(`Draft ${draftId} not found`);
   if (draft.status === 'sent' || draft.status === 'queued') {
     throw new Error(`Draft ${draftId} already ${draft.status}`);
   }
   
-  // Immediately mark as queued to prevent race condition
-  const updated = db.prepare(
-    "UPDATE drafts SET status = 'queued' WHERE id = ? AND status = 'draft'"
-  ).run(draftId);
-  if (updated.changes === 0) throw new Error(`Draft ${draftId} already being sent`);
-  
-  // Get the thread and latest message for reply context
+  // Fix #7: Validate all prerequisites BEFORE changing status
   const thread = db.prepare('SELECT * FROM threads WHERE conversation_id = ?')
     .get(draft.conversation_id);
   const latestMsg = db.prepare(
     'SELECT * FROM messages WHERE conversation_id = ? ORDER BY received_at DESC LIMIT 1'
   ).get(draft.conversation_id);
   
-  if (!latestMsg) throw new Error('No messages found in thread');
+  if (!latestMsg) throw new Error('No messages found in thread — cannot send');
+  
+  // Now atomically mark as queued (after validation)
+  const updated = db.prepare(
+    "UPDATE drafts SET status = 'queued' WHERE id = ? AND status = 'draft'"
+  ).run(draftId);
+  if (updated.changes === 0) throw new Error(`Draft ${draftId} already being sent`);
   
   // Determine recipients
   const toRecipients = parseRecipients(latestMsg.to_recipients);

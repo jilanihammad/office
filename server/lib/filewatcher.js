@@ -18,7 +18,9 @@ import path from 'path';
 import { getDb } from './db.js';
 import { classifyThread } from './classifier.js';
 
-const POLL_INTERVAL = parseInt(process.env.DROP_POLL_SECONDS || '10') * 1000;
+// Fix #16: clamp poll interval to sane range (5s-300s)
+const rawPoll = parseInt(process.env.DROP_POLL_SECONDS || '10');
+const POLL_INTERVAL = Math.max(5, Math.min(Number.isNaN(rawPoll) ? 10 : rawPoll, 300)) * 1000;
 
 let watcher = null;
 let isProcessing = false;
@@ -224,11 +226,18 @@ function processCalendarEvent(event) {
       attendees = e.attendees;
     }
     
+    // ON CONFLICT preserves prep_brief, prep_manual_edited (fix #1)
     db.prepare(`
-      INSERT OR REPLACE INTO events 
+      INSERT INTO events 
       (id, subject, start_time, end_time, location, organizer_email, organizer_name,
        attendees, body_text, is_recurring, importance, synced_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET
+        subject = excluded.subject, start_time = excluded.start_time, end_time = excluded.end_time,
+        location = excluded.location, organizer_email = excluded.organizer_email,
+        organizer_name = excluded.organizer_name, attendees = excluded.attendees,
+        body_text = excluded.body_text, is_recurring = excluded.is_recurring,
+        importance = excluded.importance, synced_at = excluded.synced_at
     `).run(
       id, e.subject || '', e.start || e.start_time || '',
       e.end || e.end_time || '', e.location || '',
@@ -308,11 +317,21 @@ async function classifyIfNeeded(db, conversationId) {
 
 function parseRecipients(raw) {
   if (!raw) return [];
-  if (Array.isArray(raw)) return raw.map(r => typeof r === 'string' ? r : r.email || r.address || '').filter(Boolean);
+  // Fix #6: Always normalize to string emails, never return objects
+  const normalize = (item) => {
+    if (typeof item === 'string') return item.trim();
+    if (typeof item === 'object' && item) return (item.email || item.address || item.emailAddress?.address || '').trim();
+    return '';
+  };
+  if (Array.isArray(raw)) return raw.map(normalize).filter(Boolean);
   if (typeof raw === 'string') {
-    // Could be semicolon-separated, comma-separated, or JSON
-    try { return JSON.parse(raw); }
-    catch { return raw.split(/[;,]/).map(e => e.trim()).filter(Boolean); }
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.map(normalize).filter(Boolean);
+      return [normalize(parsed)].filter(Boolean);
+    } catch {
+      return raw.split(/[;,]/).map(e => e.trim()).filter(Boolean);
+    }
   }
   return [];
 }

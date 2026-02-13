@@ -57,6 +57,9 @@ function ruleClassify(thread) {
   const latestMsg = thread.messages[thread.messages.length - 1];
   const userEmail = USER_EMAIL();
   
+  // Fix #5: normalize sender to string to prevent null/object crashes
+  const safeSender = (s) => (typeof s === 'string' ? s : String(s || '')).toLowerCase();
+  
   // --- Sender rules from DB ---
   const db = getDb();
   // Check exact match first, then pattern match (% wildcards)
@@ -64,7 +67,7 @@ function ruleClassify(thread) {
     'SELECT * FROM sender_rules ORDER BY priority_boost DESC'
   ).all();
   
-  const senderEmail = latestMsg.sender_email.toLowerCase();
+  const senderEmail = safeSender(latestMsg.sender_email);
   const matchedRule = senderRules.find(rule => {
     const pattern = rule.email_pattern.toLowerCase();
     // Issue #13: ReDoS protection — cap pattern length + use simple matching
@@ -85,8 +88,8 @@ function ruleClassify(thread) {
   const toRecipients = safeParseArray(latestMsg.to_recipients);
   const ccRecipients = safeParseArray(latestMsg.cc_recipients);
   
-  const inTo = toRecipients.some(r => r.toLowerCase() === userEmail);
-  const inCc = ccRecipients.some(r => r.toLowerCase() === userEmail);
+  const inTo = toRecipients.some(r => safeSender(r) === userEmail);
+  const inCc = ccRecipients.some(r => safeSender(r) === userEmail);
   
   if (inTo) { score += 20; signals.push('direct:to'); }
   else if (inCc) { score -= 10; signals.push('cc-only'); }
@@ -113,7 +116,7 @@ function ruleClassify(thread) {
   }
   
   // --- Thread signals ---
-  const youWereAsked = latestMsg.sender_email.toLowerCase() !== userEmail && inTo;
+  const youWereAsked = safeSender(latestMsg.sender_email) !== userEmail && inTo;
   if (youWereAsked) {
     score += 25;
     signals.push('thread:awaiting-your-reply');
@@ -121,9 +124,9 @@ function ruleClassify(thread) {
   
   // Check if you already replied
   const yourReplies = thread.messages.filter(
-    m => m.sender_email.toLowerCase() === userEmail
+    m => safeSender(m.sender_email) === userEmail
   );
-  const latestIsFromOther = latestMsg.sender_email.toLowerCase() !== userEmail;
+  const latestIsFromOther = safeSender(latestMsg.sender_email) !== userEmail;
   if (yourReplies.length > 0 && !latestIsFromOther) {
     score -= 15; signals.push('thread:you-replied-last');
   }

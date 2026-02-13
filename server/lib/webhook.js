@@ -46,7 +46,10 @@ export function verifyWebhook(req, res, next) {
     const expected = crypto.createHmac('sha256', secret)
       .update(`${timestamp}.${rawBody}`)
       .digest('hex');
-    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+    // Fix #3: timingSafeEqual throws on length mismatch — guard it
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
       return res.status(401).json({ error: 'Invalid webhook signature' });
     }
   } else {
@@ -202,8 +205,9 @@ export function handleCalendarWebhook(req, res) {
     for (const event of eventBatch) {
       if (!event.id || !event.subject) continue;
       
-      // Idempotency check (issue #12)
-      if (isDuplicate(`cal:${event.id}`)) {
+      // Idempotency: use event id + last-modified or subject hash to allow updates (fix #2)
+      const calKey = `cal:${event.id}:${event.lastModifiedDateTime || event.subject || ''}`;
+      if (isDuplicate(calKey)) {
         skippedDupes++;
         continue;
       }
@@ -223,11 +227,18 @@ export function handleCalendarWebhook(req, res) {
         attendees = event.attendees || [];
       }
       
+      // ON CONFLICT preserves prep_brief, prep_manual_edited (fix #1)
       db.prepare(`
-        INSERT OR REPLACE INTO events 
+        INSERT INTO events 
         (id, subject, start_time, end_time, location, organizer_email, organizer_name,
          attendees, body_text, is_recurring, importance, synced_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+          subject = excluded.subject, start_time = excluded.start_time, end_time = excluded.end_time,
+          location = excluded.location, organizer_email = excluded.organizer_email,
+          organizer_name = excluded.organizer_name, attendees = excluded.attendees,
+          body_text = excluded.body_text, is_recurring = excluded.is_recurring,
+          importance = excluded.importance, synced_at = excluded.synced_at
       `).run(
         event.id,
         event.subject,

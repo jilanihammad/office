@@ -60,7 +60,7 @@ export async function chat(systemPrompt, messages, options = {}) {
  * @yields {string} Text chunks
  */
 export async function* chatStream(systemPrompt, messages, options = {}) {
-  const { maxTokens = 4096, temperature = 0.3 } = options;
+  const { maxTokens = 4096, temperature = 0.3, timeoutMs = 120000 } = options;
 
   const body = {
     anthropic_version: 'bedrock-2023-05-31',
@@ -80,14 +80,22 @@ export async function* chatStream(systemPrompt, messages, options = {}) {
     body: JSON.stringify(body),
   });
 
-  const response = await client.send(command);
+  // Fix #18: timeout for streaming calls
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const response = await client.send(command, { abortSignal: controller.signal });
 
-  for await (const event of response.body) {
-    if (event.chunk) {
-      const data = JSON.parse(new TextDecoder().decode(event.chunk.bytes));
-      if (data.type === 'content_block_delta' && data.delta?.text) {
-        yield data.delta.text;
+    for await (const event of response.body) {
+      if (event.chunk) {
+        const data = JSON.parse(new TextDecoder().decode(event.chunk.bytes));
+        if (data.type === 'content_block_delta' && data.delta?.text) {
+          yield data.delta.text;
+        }
       }
     }
+  } finally {
+    clearTimeout(timer);
   }
 }

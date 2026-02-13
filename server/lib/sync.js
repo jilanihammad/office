@@ -161,11 +161,18 @@ export async function syncCalendar() {
   
   console.log(`[sync] Received ${events.length} events`);
   
+  // Use ON CONFLICT to preserve prep_brief, prep_manual_edited, prep_generated_at (fix #1: Critical)
   const upsert = db.prepare(`
-    INSERT OR REPLACE INTO events 
+    INSERT INTO events 
     (id, subject, start_time, end_time, location, organizer_email, organizer_name,
      attendees, body_text, is_recurring, importance, synced_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      subject = excluded.subject, start_time = excluded.start_time, end_time = excluded.end_time,
+      location = excluded.location, organizer_email = excluded.organizer_email,
+      organizer_name = excluded.organizer_name, attendees = excluded.attendees,
+      body_text = excluded.body_text, is_recurring = excluded.is_recurring,
+      importance = excluded.importance, synced_at = excluded.synced_at
   `);
   
   const insertMany = db.transaction((evts) => {

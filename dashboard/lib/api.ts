@@ -1,9 +1,9 @@
 const API = '/api';
 
-// API key for authenticated requests (set via env var or empty for dev mode)
+// API key for authenticated requests — stored in sessionStorage only (fix #22: no localStorage)
 function getApiKey(): string {
   if (typeof window !== 'undefined') {
-    return (window as Record<string, string>).__API_KEY || localStorage.getItem('apiKey') || '';
+    return (window as Record<string, string>).__API_KEY || sessionStorage.getItem('apiKey') || '';
   }
   return '';
 }
