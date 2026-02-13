@@ -22,6 +22,11 @@ import { fullSync } from './lib/sync.js';
 import { authenticate } from './lib/graph.js';
 import { verifyWebhook, handleEmailWebhook, handleCalendarWebhook, handleBulkImport } from './lib/webhook.js';
 import { startWatcher } from './lib/filewatcher.js';
+import { queueForSend, outboxStatus } from './lib/outbox.js';
+import { extractCommitments, extractAllPending, getOverdue, markDone, updateDueDate } from './lib/commitments.js';
+import { initSearch, rebuildIndex, search } from './lib/search.js';
+import { generateMeetingPrep, prepUpcoming } from './lib/meetingprep.js';
+import { processSentMail, getStyleContext, updateRelationships } from './lib/stylelearner.js';
 
 const app = express();
 app.use(cors());
@@ -437,6 +442,145 @@ app.post('/api/sender-rules', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- Send via Outbox ---
+app.post('/api/send/:draftId', (req, res) => {
+  try {
+    const { draftId } = req.params;
+    const { replyAll } = req.body;
+    const result = queueForSend(parseInt(draftId), { replyAll });
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.get('/api/outbox/status', (req, res) => {
+  res.json(outboxStatus());
+});
+
+// --- Commitments ---
+app.post('/api/commitments/extract/:conversationId', async (req, res) => {
+  try {
+    const extracted = await extractCommitments(req.params.conversationId);
+    res.json({ ok: true, commitments: extracted });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/commitments/extract-all', async (req, res) => {
+  try {
+    const results = await extractAllPending();
+    res.json({ ok: true, ...results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/commitments/overdue', (req, res) => {
+  res.json({ commitments: getOverdue() });
+});
+
+app.post('/api/commitments/:id/done', (req, res) => {
+  markDone(parseInt(req.params.id));
+  res.json({ ok: true });
+});
+
+app.patch('/api/commitments/:id', (req, res) => {
+  const { due_date } = req.body;
+  if (due_date) updateDueDate(parseInt(req.params.id), due_date);
+  res.json({ ok: true });
+});
+
+// --- Search ---
+app.get('/api/search', (req, res) => {
+  const { q, limit, type } = req.query;
+  if (!q) return res.json({ emails: [], events: [], commitments: [] });
+  const results = search(q, { limit: parseInt(limit) || 20, type });
+  res.json(results);
+});
+
+app.post('/api/search/rebuild', (req, res) => {
+  const result = rebuildIndex();
+  res.json({ ok: true, ...result });
+});
+
+// --- Meeting Prep ---
+app.get('/api/prep/:eventId', async (req, res) => {
+  try {
+    const prep = await generateMeetingPrep(req.params.eventId);
+    res.json(prep);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/prep/upcoming', async (req, res) => {
+  try {
+    const results = await prepUpcoming();
+    res.json({ ok: true, results });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Daily Brief (enhanced) ---
+app.get('/api/brief/text', async (req, res) => {
+  const db = getDb();
+  const today = new Date().toISOString().split('T')[0];
+  
+  // Urgent threads
+  const urgent = db.prepare(`
+    SELECT t.subject, c.priority, c.needs_reply
+    FROM threads t JOIN classifications c ON t.conversation_id = c.conversation_id
+    WHERE c.priority = 'P0' ORDER BY t.latest_message_at DESC LIMIT 5
+  `).all();
+  
+  // Today's meetings
+  const meetings = db.prepare(`
+    SELECT subject, start_time, end_time, location FROM events
+    WHERE date(start_time) = ? ORDER BY start_time ASC
+  `).all(today);
+  
+  // Overdue commitments
+  const overdue = getOverdue();
+  
+  // Meeting hours
+  const meetingMins = meetings.reduce((sum, e) => {
+    return sum + (new Date(e.end_time) - new Date(e.start_time)) / 60000;
+  }, 0);
+  
+  // Build text brief
+  let text = `*Daily Brief — ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}*\n\n`;
+  
+  if (urgent.length > 0) {
+    text += `*Must Decide Now (${urgent.length})*\n`;
+    urgent.forEach(t => { text += `- ${t.subject}${t.needs_reply ? ' [needs reply]' : ''}\n`; });
+    text += '\n';
+  }
+  
+  if (meetings.length > 0) {
+    text += `*Meetings (${meetings.length} · ${(meetingMins / 60).toFixed(1)}h)*\n`;
+    meetings.forEach(m => {
+      const time = new Date(m.start_time).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      text += `- ${time} ${m.subject}${m.location ? ` (${m.location})` : ''}\n`;
+    });
+    text += '\n';
+  }
+  
+  if (overdue.length > 0) {
+    text += `*Overdue (${overdue.length})*\n`;
+    overdue.forEach(c => { text += `- ${c.owner}: ${c.description} (was due ${c.due_date})\n`; });
+    text += '\n';
+  }
+  
+  if (urgent.length === 0 && meetings.length === 0 && overdue.length === 0) {
+    text += 'Clear day. No urgent emails, no meetings, nothing overdue.';
+  }
+  
+  res.json({ text, date: today });
+});
+
 // --- Webhooks (Power Automate) ---
 app.post('/api/webhook/email', verifyWebhook, handleEmailWebhook);
 app.post('/api/webhook/calendar', verifyWebhook, handleCalendarWebhook);
@@ -444,9 +588,10 @@ app.post('/api/webhook/bulk', verifyWebhook, handleBulkImport);
 
 // --- Startup ---
 async function start() {
-  // Init DB
+  // Init DB + search
   getDb();
   console.log('[db] SQLite initialized');
+  initSearch();
   
   // Determine sync mode
   const hasGraphConfig = process.env.AZURE_CLIENT_ID && process.env.AZURE_TENANT_ID;
@@ -481,9 +626,42 @@ async function start() {
   const dropFolder = process.env.DROP_FOLDER;
   if (dropFolder) {
     startWatcher(dropFolder);
+    
+    // Periodic tasks: commitment extraction, style learning, meeting prep, relationship updates
+    cron.schedule('*/5 * * * *', async () => {
+      try {
+        // Extract commitments from new P0/P1 threads
+        const commitResults = await extractAllPending();
+        if (commitResults.extracted > 0) {
+          console.log(`[cron] Extracted ${commitResults.extracted} commitments from ${commitResults.scanned} threads`);
+        }
+        
+        // Process sent emails for style learning
+        processSentMail(dropFolder);
+        
+        // Update relationship memory
+        updateRelationships(dropFolder);
+      } catch (err) {
+        console.error('[cron] Periodic task failed:', err.message);
+      }
+    });
+    console.log('[cron] Commitment extraction + style learning every 5 minutes');
+    
+    // Meeting prep: generate briefs for upcoming meetings hourly
+    cron.schedule('0 * * * *', async () => {
+      try {
+        const results = await prepUpcoming();
+        if (results.length > 0) {
+          console.log(`[cron] Generated ${results.length} meeting prep brief(s)`);
+        }
+      } catch (err) {
+        console.error('[cron] Meeting prep failed:', err.message);
+      }
+    });
+    console.log('[cron] Meeting prep briefs generated hourly');
   } else {
     console.log('[watcher] No DROP_FOLDER configured — set it in .env to enable OneDrive sync');
-    console.log('[watcher] Example: DROP_FOLDER=~/Library/CloudStorage/OneDrive-YourCompany/Office-Drop');
+    console.log('[watcher] Example: DROP_FOLDER=/mnt/c/Users/<you>/OneDrive - Company/Office-Drop');
   }
   
   // Start server
@@ -500,9 +678,13 @@ async function start() {
     console.log(`  POST /api/sync              — Manual sync (Graph mode)`);
     console.log(`  POST /api/draft/:id         — Generate reply draft`);
     console.log(`  POST /api/override/:id      — Override priority`);
+    console.log(`  POST /api/send/:draftId     — Send draft via outbox`);
+    console.log(`  GET  /api/search?q=         — Full-text search`);
+    console.log(`  POST /api/commitments/extract-all — Extract commitments`);
+    console.log(`  GET  /api/prep/:eventId     — Meeting prep brief`);
+    console.log(`  GET  /api/brief/text        — Text-formatted daily brief`);
     console.log(`  POST /api/webhook/email     — Power Automate email webhook`);
-    console.log(`  POST /api/webhook/calendar  — Power Automate calendar webhook`);
-    console.log(`  POST /api/webhook/bulk      — Bulk import\n`);
+    console.log(`  POST /api/webhook/calendar  — Power Automate calendar webhook\n`);
   });
 }
 

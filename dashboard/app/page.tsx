@@ -54,6 +54,9 @@ export default function Dashboard() {
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <Link href="/search" className="px-3 py-1.5 text-sm rounded-md bg-[var(--bg-card)] border border-[var(--border)] hover:bg-[var(--bg-hover)] transition-colors">
+            Search
+          </Link>
           <Link href="/calendar" className="px-3 py-1.5 text-sm rounded-md bg-[var(--bg-card)] border border-[var(--border)] hover:bg-[var(--bg-hover)] transition-colors">
             Calendar
           </Link>

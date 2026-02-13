@@ -5,6 +5,40 @@ import { api, type CalendarEvent } from '@/lib/api';
 import { formatTime } from '@/lib/utils';
 import Link from 'next/link';
 
+function PrepButton({ eventId }: { eventId: string }) {
+  const [loading, setLoading] = useState(false);
+  const [brief, setBrief] = useState<string | null>(null);
+
+  const handlePrep = async () => {
+    setLoading(true);
+    try {
+      const data = await api.meetingPrep(eventId);
+      setBrief(data.brief);
+    } catch (e: unknown) {
+      setBrief(`Failed: ${e instanceof Error ? e.message : 'unknown error'}`);
+    }
+    setLoading(false);
+  };
+
+  if (brief) {
+    return (
+      <div className="mt-2 p-3 rounded-md bg-[var(--bg)] border border-[var(--border)] text-xs whitespace-pre-wrap">
+        {brief}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={handlePrep}
+      disabled={loading}
+      className="mt-2 text-xs text-[var(--accent)] hover:underline disabled:opacity-50"
+    >
+      {loading ? 'Generating prep...' : 'Generate prep brief'}
+    </button>
+  );
+}
+
 export default function CalendarPage() {
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -53,26 +87,29 @@ export default function CalendarPage() {
                   : `${durationMin}m`;
 
                 return (
-                  <div key={e.id} className="flex gap-4 p-4 rounded-lg border border-[var(--border)] bg-[var(--bg-card)] hover:bg-[var(--bg-hover)] transition-colors">
-                    <div className="shrink-0 w-20 text-right">
-                      <div className="text-sm font-medium">{formatTime(e.start_time)}</div>
-                      <div className="text-xs text-[var(--text-muted)]">{durationStr}</div>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium">{e.subject}</div>
-                      {e.location && (
-                        <div className="text-sm text-[var(--text-muted)] mt-0.5">{e.location}</div>
+                  <div key={e.id} className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] hover:bg-[var(--bg-hover)] transition-colors">
+                    <div className="flex gap-4 p-4">
+                      <div className="shrink-0 w-20 text-right">
+                        <div className="text-sm font-medium">{formatTime(e.start_time)}</div>
+                        <div className="text-xs text-[var(--text-muted)]">{durationStr}</div>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium">{e.subject}</div>
+                        {e.location && (
+                          <div className="text-sm text-[var(--text-muted)] mt-0.5">{e.location}</div>
+                        )}
+                        {e.attendees.length > 0 && (
+                          <div className="text-xs text-[var(--text-muted)] mt-1">
+                            {e.attendees.slice(0, 5).map(a => a.name || a.email).join(', ')}
+                            {e.attendees.length > 5 && ` +${e.attendees.length - 5}`}
+                          </div>
+                        )}
+                        <PrepButton eventId={e.id} />
+                      </div>
+                      {e.is_recurring === 1 && (
+                        <span className="shrink-0 text-xs text-[var(--text-muted)]">recurring</span>
                       )}
-                      {e.attendees.length > 0 && (
-                        <div className="text-xs text-[var(--text-muted)] mt-1">
-                          {e.attendees.slice(0, 5).map(a => a.name || a.email).join(', ')}
-                          {e.attendees.length > 5 && ` +${e.attendees.length - 5}`}
-                        </div>
-                      )}
                     </div>
-                    {e.is_recurring === 1 && (
-                      <span className="shrink-0 text-xs text-[var(--text-muted)]">recurring</span>
-                    )}
                   </div>
                 );
               })}

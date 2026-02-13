@@ -150,4 +150,19 @@ export const api = {
   senderRules: () => get<{ rules: { email_pattern: string; priority_boost: number; label: string }[] }>('/sender-rules'),
   addSenderRule: (rule: { email_pattern: string; priority_boost: number; label: string }) =>
     post<{ ok: boolean }>('/sender-rules', rule),
+  send: (draftId: number, replyAll = false) =>
+    post<{ ok: boolean; outboxFile: string; to: string[]; cc: string[] }>(`/send/${draftId}`, { replyAll }),
+  search: (q: string, type?: string) =>
+    get<{ emails: (Thread & { snippet: string })[]; events: (CalendarEvent & { snippet: string })[]; commitments: Commitment[] }>(
+      `/search?q=${encodeURIComponent(q)}${type ? `&type=${type}` : ''}`
+    ),
+  extractCommitments: () => post<{ ok: boolean; scanned: number; extracted: number }>('/commitments/extract-all'),
+  completeCommitment: (id: number) => post<{ ok: boolean }>(`/commitments/${id}/done`),
+  meetingPrep: (eventId: string) => get<{
+    event: CalendarEvent;
+    relatedThreads: Thread[];
+    commitments: Commitment[];
+    brief: string;
+  }>(`/prep/${encodeURIComponent(eventId)}`),
+  briefText: () => get<{ text: string; date: string }>('/brief/text'),
 };

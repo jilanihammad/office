@@ -212,12 +212,43 @@ export default function ThreadPage({ params }: { params: Promise<{ id: string }>
                 <span className="text-xs text-[var(--text-muted)]">{timeAgo(d.created_at)}</span>
               </div>
               <div className="text-sm whitespace-pre-wrap">{d.body_text}</div>
-              <button
-                onClick={() => navigator.clipboard.writeText(d.body_text)}
-                className="mt-2 text-xs text-[var(--accent)] hover:underline"
-              >
-                Copy to clipboard
-              </button>
+              <div className="mt-2 flex gap-3">
+                <button
+                  onClick={() => navigator.clipboard.writeText(d.body_text)}
+                  className="text-xs text-[var(--text-muted)] hover:text-[var(--text)]"
+                >
+                  Copy
+                </button>
+                {d.status === 'draft' && (
+                  <>
+                    <button
+                      onClick={async () => {
+                        if (!confirm('Send this reply?')) return;
+                        await api.send(d.id);
+                        const updated = await api.thread(decodeURIComponent(id));
+                        setData(updated);
+                      }}
+                      className="text-xs text-[var(--accent)] hover:underline"
+                    >
+                      Send Reply
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!confirm('Send as reply-all?')) return;
+                        await api.send(d.id, true);
+                        const updated = await api.thread(decodeURIComponent(id));
+                        setData(updated);
+                      }}
+                      className="text-xs text-[var(--accent)] hover:underline"
+                    >
+                      Reply All
+                    </button>
+                  </>
+                )}
+                {d.status === 'queued' && (
+                  <span className="text-xs text-[var(--success)]">Queued for sending</span>
+                )}
+              </div>
             </div>
           ))}
           {drafts.length === 0 && (
