@@ -34,10 +34,18 @@ export function queueForSend(draftId, options = {}) {
     fs.mkdirSync(outboxDir, { recursive: true });
   }
   
-  // Get the draft
+  // Get the draft (atomic check-and-update to prevent double-send)
   const draft = db.prepare('SELECT * FROM drafts WHERE id = ?').get(draftId);
   if (!draft) throw new Error(`Draft ${draftId} not found`);
-  if (draft.status === 'sent') throw new Error(`Draft ${draftId} already sent`);
+  if (draft.status === 'sent' || draft.status === 'queued') {
+    throw new Error(`Draft ${draftId} already ${draft.status}`);
+  }
+  
+  // Immediately mark as queued to prevent race condition
+  const updated = db.prepare(
+    "UPDATE drafts SET status = 'queued' WHERE id = ? AND status = 'draft'"
+  ).run(draftId);
+  if (updated.changes === 0) throw new Error(`Draft ${draftId} already being sent`);
   
   // Get the thread and latest message for reply context
   const thread = db.prepare('SELECT * FROM threads WHERE conversation_id = ?')
@@ -88,8 +96,8 @@ export function queueForSend(draftId, options = {}) {
   const filePath = path.join(outboxDir, fileName);
   fs.writeFileSync(filePath, JSON.stringify(outboxEntry, null, 2));
   
-  // Mark draft as queued
-  db.prepare("UPDATE drafts SET status = 'queued', sent_at = datetime('now') WHERE id = ?")
+  // Update sent timestamp
+  db.prepare("UPDATE drafts SET sent_at = datetime('now') WHERE id = ?")
     .run(draftId);
   
   console.log(`[outbox] Queued draft ${draftId} → ${fileName}`);

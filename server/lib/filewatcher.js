@@ -84,7 +84,16 @@ async function processFolder(srcDir, archiveDir, type) {
   for (const file of files) {
     const filePath = path.join(srcDir, file);
     try {
+      // Skip files still being written (OneDrive sync in progress)
+      const stat = fs.statSync(filePath);
+      if (Date.now() - stat.mtimeMs < 2000) {
+        continue; // File modified <2s ago — likely still syncing
+      }
+      
       const raw = fs.readFileSync(filePath, 'utf-8');
+      if (!raw || raw.trim().length === 0) {
+        continue; // Empty file — OneDrive placeholder
+      }
       const data = JSON.parse(raw);
       
       if (type === 'email') {

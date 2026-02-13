@@ -66,9 +66,22 @@ Extract all commitments. JSON array only.`;
       temperature: 0.1,
     });
     
-    // Parse JSON from response (handle markdown code blocks)
+    // Parse JSON from response (handle markdown code blocks, malformed output)
     const jsonStr = response.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
-    const commitments = JSON.parse(jsonStr);
+    let commitments;
+    try {
+      commitments = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      // Try to extract JSON array from response
+      const match = jsonStr.match(/\[[\s\S]*\]/);
+      if (match) {
+        try { commitments = JSON.parse(match[0]); }
+        catch { return []; }
+      } else {
+        console.warn(`[commitments] LLM returned non-JSON: ${jsonStr.slice(0, 100)}`);
+        return [];
+      }
+    }
     
     if (!Array.isArray(commitments)) return [];
     

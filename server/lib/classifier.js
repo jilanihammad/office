@@ -49,6 +49,11 @@ const PRIORITY_LABELS = {
 function ruleClassify(thread) {
   let score = 0;
   const signals = [];
+  
+  if (!thread.messages || thread.messages.length === 0) {
+    return { priority: 'P3', score: 0, signals: ['no-messages'], confidence: 0, needsReply: false, needsLLM: false };
+  }
+  
   const latestMsg = thread.messages[thread.messages.length - 1];
   const userEmail = USER_EMAIL();
   
@@ -63,8 +68,9 @@ function ruleClassify(thread) {
   const matchedRule = senderRules.find(rule => {
     const pattern = rule.email_pattern.toLowerCase();
     if (pattern.includes('%')) {
-      // SQL LIKE pattern: convert to regex
-      const regex = new RegExp('^' + pattern.replace(/%/g, '.*').replace(/\./g, '\\.') + '$');
+      // SQL LIKE pattern: convert to regex (escape dots FIRST, then convert %)
+      const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // Escape all regex special chars
+      const regex = new RegExp('^' + escaped.replace(/%/g, '.*') + '$');
       return regex.test(senderEmail);
     }
     return pattern === senderEmail;

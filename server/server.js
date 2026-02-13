@@ -30,9 +30,30 @@ import { processSentMail, getStyleContext, updateRelationships } from './lib/sty
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '5mb' })); // Limit body size to prevent OOM
 
 const PORT = parseInt(process.env.PORT || '3456');
+
+// --- Global error handler for uncaught sync errors in routes ---
+function wrapSync(fn) {
+  return (req, res, next) => {
+    try { fn(req, res, next); }
+    catch (err) { res.status(500).json({ error: err.message }); }
+  };
+}
+
+// --- Expand tilde in paths ---
+function expandTilde(p) {
+  if (!p) return p;
+  if (p.startsWith('~')) return p.replace('~', process.env.HOME || process.env.USERPROFILE || '');
+  return p;
+}
+
+// --- Safe parseInt ---
+function safeInt(val, defaultVal = 0) {
+  const n = parseInt(val);
+  return Number.isNaN(n) ? defaultVal : n;
+}
 
 // --- Health ---
 app.get('/api/health', (req, res) => {
@@ -72,7 +93,7 @@ app.get('/api/threads', (req, res) => {
   
   query += ' ORDER BY CASE c.priority WHEN \'P0\' THEN 0 WHEN \'P1\' THEN 1 WHEN \'P2\' THEN 2 WHEN \'P3\' THEN 3 ELSE 4 END, t.latest_message_at DESC';
   query += ' LIMIT ? OFFSET ?';
-  params.push(parseInt(limit), parseInt(offset));
+  params.push(safeInt(limit, 50), safeInt(offset, 0));
   
   const threads = db.prepare(query).all(...params);
   
@@ -447,7 +468,7 @@ app.post('/api/send/:draftId', (req, res) => {
   try {
     const { draftId } = req.params;
     const { replyAll } = req.body;
-    const result = queueForSend(parseInt(draftId), { replyAll });
+    const result = queueForSend(safeInt(draftId, 0), { replyAll });
     res.json(result);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -482,13 +503,13 @@ app.get('/api/commitments/overdue', (req, res) => {
 });
 
 app.post('/api/commitments/:id/done', (req, res) => {
-  markDone(parseInt(req.params.id));
+  markDone(safeInt(req.params.id));
   res.json({ ok: true });
 });
 
 app.patch('/api/commitments/:id', (req, res) => {
   const { due_date } = req.body;
-  if (due_date) updateDueDate(parseInt(req.params.id), due_date);
+  if (due_date) updateDueDate(safeInt(req.params.id), due_date);
   res.json({ ok: true });
 });
 
@@ -496,7 +517,7 @@ app.patch('/api/commitments/:id', (req, res) => {
 app.get('/api/search', (req, res) => {
   const { q, limit, type } = req.query;
   if (!q) return res.json({ emails: [], events: [], commitments: [] });
-  const results = search(q, { limit: parseInt(limit) || 20, type });
+  const results = search(q, { limit: safeInt(limit, 20), type });
   res.json(results);
 });
 
@@ -581,6 +602,12 @@ app.get('/api/brief/text', async (req, res) => {
   res.json({ text, date: today });
 });
 
+// --- Global error handler ---
+app.use((err, req, res, _next) => {
+  console.error(`[error] ${req.method} ${req.path}:`, err.message);
+  res.status(500).json({ error: err.message });
+});
+
 // --- Webhooks (Power Automate) ---
 app.post('/api/webhook/email', verifyWebhook, handleEmailWebhook);
 app.post('/api/webhook/calendar', verifyWebhook, handleCalendarWebhook);
@@ -623,7 +650,7 @@ async function start() {
   }
   
   // Start file watcher (OneDrive drop folder)
-  const dropFolder = process.env.DROP_FOLDER;
+  const dropFolder = expandTilde(process.env.DROP_FOLDER);
   if (dropFolder) {
     startWatcher(dropFolder);
     

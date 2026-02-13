@@ -63,8 +63,8 @@ export async function handleEmailWebhook(req, res) {
       continue;
     }
     
-    const toList = (email.to || '').split(';').map(e => e.trim()).filter(Boolean);
-    const ccList = (email.cc || '').split(';').map(e => e.trim()).filter(Boolean);
+    const toList = parseEmailList(email.to || email.toRecipients);
+    const ccList = parseEmailList(email.cc || email.ccRecipients);
     
     // Upsert message
     db.prepare(`
@@ -76,8 +76,8 @@ export async function handleEmailWebhook(req, res) {
       email.id,
       email.conversationId,
       email.subject || '',
-      (email.from || '').toLowerCase(),
-      email.fromName || '',
+      parseFromField(email.from || email.fromEmail).email,
+      email.fromName || parseFromField(email.from).name,
       JSON.stringify(toList),
       JSON.stringify(ccList),
       email.bodyPreview || '',
@@ -320,6 +320,59 @@ function stripHtml(html) {
     .replace(/&gt;/g, '>')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+/**
+ * Parse email recipient field — handles:
+ * - Plain string: "a@b.com;c@d.com"
+ * - JSON string of array: '["a@b.com","c@d.com"]'
+ * - PA dynamic content object: {"address":"a@b.com","name":"John"}
+ * - Array of objects: [{"address":"a@b.com"},...]
+ */
+function parseEmailList(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) {
+    return raw.map(r => typeof r === 'string' ? r : r.address || r.email || r.emailAddress?.address || '').filter(Boolean);
+  }
+  if (typeof raw === 'object') {
+    return [raw.address || raw.email || raw.emailAddress?.address || ''].filter(Boolean);
+  }
+  if (typeof raw === 'string') {
+    // Try JSON parse first
+    try {
+      const parsed = JSON.parse(raw);
+      return parseEmailList(parsed);
+    } catch {
+      // Semicolon or comma separated string
+      return raw.split(/[;,]/).map(e => e.trim()).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+/**
+ * Extract email address from PA "from" field — could be:
+ * - Plain string: "john@company.com"
+ * - JSON string: '{"address":"john@company.com","name":"John"}'
+ * - Object: {address: "john@company.com"}
+ */
+function parseFromField(raw) {
+  if (!raw) return { email: '', name: '' };
+  if (typeof raw === 'object') {
+    return {
+      email: (raw.address || raw.email || raw.emailAddress?.address || '').toLowerCase(),
+      name: raw.name || raw.emailAddress?.name || '',
+    };
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      return parseFromField(parsed);
+    } catch {
+      return { email: raw.toLowerCase(), name: '' };
+    }
+  }
+  return { email: '', name: '' };
 }
 
 function safeParseArray(json) {
