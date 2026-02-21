@@ -1,75 +1,121 @@
 # First Principles Thinking
 
-*Use this before building, during building, and after launching. Answer every question with evidence, not belief. If you can't answer with evidence, that's your first problem to solve.*
+First principles thinking has one move: **separate what is TRUE from what is CONVENTION, then reason only from what is true.**
+
+Everything else — frameworks, best practices, competitive analysis, analogies — is pattern-matching dressed up as thinking. Frameworks and analogies may generate hypotheses, but they do not count as evidence.
 
 ---
 
-## 1. The Problem
+## 1. State the Problem Raw
 
-Start here. Not with your solution. Not with your feature list. With the human who has the problem.
+One sentence. No jargon, no category labels, no reference to existing solutions.
 
-- **Who exactly has this problem?** Name the person, their role, their context. "Small businesses" is not an answer. "A solo restaurant owner managing their own books after closing at 11pm" is.
+Not: *"Build a better project management tool"*
+But: *"Help groups of people coordinate work toward shared outcomes"*
 
-- **Who is explicitly NOT the customer?** Define exclusion criteria to prevent scope creep and confused positioning.
+Not: *"Disrupt the insurance industry"*
+But: *"Reduce the financial damage of unpredictable bad events"*
 
-- **What are they doing about it today?** Every problem has a current solution — even if it's ignoring it, using a spreadsheet, or hiring someone. What is it? If they're doing nothing, why not? Apathy kills more startups than competition.
-
-- **What job is the customer hiring this for, and what outcome defines success?** Write success in customer terms (time saved, error reduction, revenue protected), not feature terms.
-
-- **How do you know this is painful?** Not "I think" or "it makes sense that." What's the evidence? Conversations, data, observed behavior? If your evidence is "I had this problem myself" — that's one data point. How many others have you validated?
-
-- **How often does this pain occur, and how severe is it?** Daily pain builds habits. Low-frequency problems are usually weaker businesses unless stakes are high (money, risk, compliance, reputation). Score frequency × severity × consequence.
-
-## 2. The Solution
-
-Now — and only now — talk about what you're building.
-
-- **Describe it in one sentence your customer would use to tell a friend.** Not your investor pitch. Not your tagline. The words a real person would actually say. If you can't do this, you don't understand what you're building yet.
-
-- **What is the smallest thing you could build that delivers the core value?** Not the version you want to build. Not the version that's "competitive." The version that makes one person's problem go away. If you had one engineer and two weeks, what would you ship?
-
-- **List your assumptions.** Every product is a stack of assumptions — about the customer, the problem, the willingness to pay, the channel, the timing. Write them down. For each one: confidence (0-100%), a falsifiable test, a success threshold, and a decision date. If it can't be falsified, it's not an assumption — it's a story.
-
-## 3. Reality
-
-- **Why would someone choose this over alternatives — including doing nothing?** "Better UX" is not a sufficient answer. What's the step-change difference? Quantify it (e.g., 5 hours/week saved, 30% fewer errors). If there isn't one, you need a different distribution strategy or a different product.
-
-- **Is this a painkiller or a vitamin?** Painkillers solve problems people are actively trying to fix — they'll seek you out. Vitamins are nice-to-have — you'll have to convince people they need you. Both can be businesses, but they require completely different go-to-market strategies. Know which one you are. Don't lie to yourself.
-
-- **Why now?** What changed — in technology, behavior, regulation, cost structure — that makes this possible or necessary *today*? If this could have been built five years ago, why wasn't it? If it was, why did it fail?
-
-- **What proof of willingness to pay do you have from behavior?** Not opinions — actions. Prepayment, signed pilot, LOI with budget owner, active paid usage. "Would you use this?" is worthless. "Would you pay $X/month?" is better. Someone actually paying is the only real answer.
-
-- **How will your first 100 customers discover and trust you?** Name one primary channel and your conversion assumptions. A great product nobody can find is not a business.
-
-- **What makes this sticky after week 4?** If users don't return naturally, acquisition only delays failure.
-
-## 4. The Hard Questions
-
-These determine whether you're building something real or running an expensive experiment in self-deception.
-
-- **What would have to be true for this to succeed?** List the conditions. Now honestly assess: how many are true today vs. how many are you betting will become true?
-
-- **What's the strongest argument against building this?** Not a strawman. The real one. The one that keeps you up at night. If you can't articulate it, you haven't thought hard enough.
-
-- **What disconfirming evidence are you avoiding collecting?** The data you don't want to look at is probably the data that matters most.
-
-- **If you knew everything you know now but hadn't started building — would you still start?** This is the only question that matters for products already in motion. It separates conviction from sunk cost.
-
-- **What are your kill criteria?** Define 2-3 disconfirming signals that trigger pivot or stop, with deadlines. If you don't define when to quit, you never will.
+If your description references an existing product category, you haven't gone deep enough. You're still inside someone else's framing.
 
 ---
 
-## Now What
+## 2. Surface and Classify Every Belief
 
-**If you couldn't answer §1 with evidence:** Stop building. Go talk to customers. Not surveys — conversations. Ten genuine conversations will teach you more than three months of building.
+Write down everything you believe about this problem. Everything — especially the things that feel obviously true:
 
-**If your §2 assumptions are mostly "hoping":** Design experiments to validate the top 3 riskiest assumptions before writing more code. Find the fastest, cheapest test that could prove you wrong.
+- How people currently solve it
+- What they'd pay
+- What form the solution takes
+- Who the customer is
+- How you'd build it
+- How they'd find you
 
-**If §3 exposed weak answers:** You have a positioning problem, a timing problem, or a product problem. Figure out which before proceeding.
+Now mark each one:
 
-**If §4 made you uncomfortable:** Good. That's the point. Sit with the discomfort and decide whether to adapt or persist — but do it deliberately, not by default.
+- **T** — Fundamental truth (physics, math, logic, replicated behavioral tendencies with explicit boundary conditions, regulation with real enforcement)
+- **A** — Assumption (inherited from how the industry works, what competitors do, "best practices," analogies, your past experience)
+
+**The test:** If you wiped everyone's memory and started civilization over, would this still be true? If yes, **T**. If it depends on how things happen to be organized right now, **A**.
+
+**For every T, include: (a) evidence source, (b) scope conditions, and (c) confidence (High/Med/Low). Any T missing one of these defaults to A.**
+
+Most of what you believe is **A**. If your list isn't mostly A's, you're not being honest.
 
 ---
 
-*The goal is not to kill ideas. It's to kill bad assumptions before they waste your time. The best products survive these questions easily. If yours doesn't — that's not failure, it's a signal to adjust.*
+## 3. Decompose the Assumptions
+
+For each **A**:
+
+**Why do I believe this?** Trace it to its source. You'll usually land on *"because that's how X does it"* or *"because someone credible said so"* or *"because it's always been this way."*
+
+**What is the underlying truth beneath this assumption?** This is the Musk battery move. Everyone said batteries cost $600/kWh. He asked what batteries are made of — cobalt, nickel, aluminum, carbon, polymers, a steel can. He checked material costs on the London Metal Exchange: ~$80/kWh. The $520 gap was pure convention. Find your $520 gap.
+
+**If this assumption evaporated tomorrow, what would change?** If the answer is "nothing much," it's not load-bearing. If the answer reshapes your entire approach, you found something.
+
+---
+
+## 4. Identify the Immovable Constraints
+
+What cannot change regardless of how clever you are?
+
+- **Physical** — speed of light, thermodynamics, human biological limits (attention, sleep, cognition)
+- **Mathematical** — information-theoretic limits, combinatorial explosions, unit economics that fail at every scale
+- **Behavioral invariants** — loss aversion, finite attention, trust requires consistency, people satisfice rather than optimize, status drives behavior. Note: these are tendencies with boundary conditions, not universal laws. Context matters.
+- **Hard legal** — not "regulations" broadly, but the ones with real teeth, active enforcement, and consequences you can't absorb
+
+Everything else is a candidate soft constraint. Treat it as movable only after specifying what must change and what it would cost.
+
+---
+
+## 5. Reason Up From Truths
+
+Pretend nothing exists. No current products, no current industry, no current tech stack (unless it's physics).
+
+**First, define the objective function:** What is being optimized, for whom, and over what time horizon?
+
+Given ONLY your fundamental truths and hard constraints:
+
+**What does the theoretically optimal solution look like?** Don't self-censor for feasibility yet. If you could snap your fingers, what would the perfect resolution of your raw problem (Step 1) be?
+
+**Where exactly does reality deviate from that optimum, and why?** Be specific. Each deviation is either:
+- A hard constraint (accept it)
+- A convention nobody has challenged (attack it)
+- A coordination problem waiting to be solved (that's your opening)
+
+**What would you build knowing only the fundamentals?** Not a better version of what exists. The thing you'd construct if you'd never seen the current solutions and only understood the underlying truths. **For each major design choice, point to the specific T(s) and hard constraint(s) that imply it. If you can't, it's an assumption.**
+
+---
+
+## 6. Catch Yourself Cheating
+
+You've built a logic chain from truths to a solution. Now break it:
+
+**Where did you sneak an assumption back in?** You almost certainly did. Re-read your reasoning. Any step that relies on *"how things work"* rather than *why things must be that way* is smuggled convention.
+
+**Are you reasoning from truth, or reverse-engineering a justification for what you already wanted to build?** If your first-principles analysis conveniently confirms your original idea, be deeply suspicious. You probably worked backward.
+
+**Construct the strongest opposing conclusion using the same T set.** If both your conclusion and its opposite can be derived from the same truths, your truths are under-specified. Go back and sharpen them.
+
+**What's the most uncomfortable conclusion your reasoning produces?** If every conclusion feels comfortable, you haven't gone deep enough. First principles thinking regularly produces answers that feel *wrong* precisely because they violate convention. Sit with the discomfort.
+
+**What would you have to believe for your conclusion to be wrong?** Name it specifically. If you can't articulate it, you don't understand your own reasoning.
+
+---
+
+## The Gut Check
+
+> Did I actually change my mind about anything?
+
+If no, you either:
+1. Were already reasoning from first principles (unlikely), or
+2. Performed the exercise as confirmation, not inquiry (likely)
+
+**Name one observation that, if true, would invalidate your conclusion.** If you can't, your conclusion isn't falsifiable — and unfalsifiable conclusions aren't reasoning, they're faith.
+
+This process should be **destabilizing**. It should make you uncomfortable about things you were confident about. If it felt smooth, you did it wrong. Go back to Step 2 and be more honest about what's actually a **T**.
+
+---
+
+*First principles thinking is not a one-time exercise. Every time you say "we should do X because that's how it's done" or "the industry standard is Y" or "competitors all do Z" — you've left first principles. The question is always: but is it TRUE?*
