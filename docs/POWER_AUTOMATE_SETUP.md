@@ -39,14 +39,14 @@ ls "/mnt/c/Users/<your-windows-user>/"
 ```
 
 Common paths:
-- `/mnt/c/Users/jilani/OneDrive - Amazon/`
-- `/mnt/c/Users/jilani/OneDrive/`
+- `/mnt/c/Users/<your-user>/OneDrive - YourOrg/`
+- `/mnt/c/Users/<your-user>/OneDrive/`
 
 ## Step 3: Create Drop Folders
 
 ```bash
 # Replace with your actual OneDrive path
-ONEDRIVE="/mnt/c/Users/<your-windows-user>/OneDrive - Amazon"
+ONEDRIVE="/mnt/c/Users/<your-windows-user>/OneDrive"
 mkdir -p "$ONEDRIVE/Office-Drop/"{inbox,calendar,outbox,sent-mail,processed}
 ```
 
@@ -69,7 +69,7 @@ cp .env.example .env
 Edit `.env`:
 ```bash
 # OneDrive drop folder (use the WSL path)
-DROP_FOLDER=/mnt/c/Users/<your-windows-user>/OneDrive - Amazon/Office-Drop
+DROP_FOLDER=/mnt/c/Users/<your-windows-user>/OneDrive/Office-Drop
 
 # How often to check for new files (seconds)
 DROP_POLL_SECONDS=10
@@ -270,7 +270,7 @@ Total latency: **~20-45 seconds** from email received to classified in dashboard
 
 ## Troubleshooting
 
-**Files not appearing in WSL**: Check the path. Run `ls "/mnt/c/Users/<you>/OneDrive - Amazon/Office-Drop/inbox/"` — you should see `.json` files after Power Automate runs.
+**Files not appearing in WSL**: Check the path. Run `ls "/mnt/c/Users/<you>/OneDrive/Office-Drop/inbox/"` — you should see `.json` files after Power Automate runs.
 
 **"Permission denied" reading OneDrive files**: WSL2 can sometimes have permission issues with `/mnt/c/`. Fix: add to `/etc/wsl.conf`:
 ```ini

@@ -768,9 +768,9 @@ Style examples:
 
 - **100% local execution** — no cloud hosting, no EC2, no external servers. Everything runs on your local machine (Mac Mini or laptop).
 - **Cron-based automation** — polling jobs (email sync, calendar sync, commitment checks) run every 15-30 minutes via cron or `node-cron`.
-- **Only external API: Amazon Bedrock** — Claude Opus 4.6 via Bedrock is the sole external service. All email data sent to Bedrock is covered by Amazon's enterprise data handling policies.
+- **Only external API: AWS Bedrock** — Claude Opus 4.6 via Bedrock is the sole external service.
 - **Dashboard access: localhost only** — `http://localhost:3000` (dashboard) and `http://localhost:3456` (API). No public endpoints.
-- **Why:** User works at Amazon. Privacy and security are non-negotiable. No corporate email data touches third-party cloud infrastructure.
+- **Why:** Privacy and security are non-negotiable. No corporate email data touches third-party infrastructure.
 
 ## Memory System
 
@@ -879,7 +879,7 @@ This gives the LLM the same context a human executive assistant would have after
 - **All data stays local** — SQLite database on local disk, no cloud sync
 - OAuth tokens stored in macOS Keychain, never in plaintext
 - Email bodies stored locally — never sent to third parties
-- LLM calls go through Amazon Bedrock only (enterprise data handling, compliant with internal policy)
+- LLM calls go through AWS Bedrock only (enterprise-grade data handling)
 - No telemetry, no analytics, no external data transmission except Bedrock API
 - Session tokens auto-refresh; revocable from Azure AD portal
 - Optional: SQLCipher encryption at rest for the SQLite database

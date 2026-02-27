@@ -1,5 +1,5 @@
 /**
- * LLM provider — Amazon Bedrock with Claude Opus 4.6
+ * LLM provider — AWS Bedrock with Claude Opus 4.6
  * Only external API call in the system.
  */
 import { BedrockRuntimeClient, InvokeModelCommand, InvokeModelWithResponseStreamCommand } from '@aws-sdk/client-bedrock-runtime';
