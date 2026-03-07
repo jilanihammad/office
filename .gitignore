@@ -4,6 +4,7 @@ package-lock.json
 server/package-lock.json
 dashboard/package-lock.json
 *.db
-.env
+.env*
+!.env.example
 *.db-shm
 *.db-wal
